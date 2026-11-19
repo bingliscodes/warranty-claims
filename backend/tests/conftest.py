@@ -1,8 +1,11 @@
 import os
+from pathlib import Path
 
 import pytest
+from alembic import command
+from alembic.config import Config
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
 from app.config import Settings
@@ -28,9 +31,25 @@ def settings() -> Settings:
     )
 
 
+ALEMBIC_INI = Path(__file__).resolve().parent.parent / "alembic.ini"
+
+
 @pytest.fixture(scope="session")
 def engine(settings):
+    """Once per test run: wipe the test database and rebuild it from the
+    migrations, so the tests always run against the schema the migrations
+    produce."""
     engine = create_engine(settings.DATABASE_URL)
+    with engine.begin() as connection:
+        connection.execute(text("DROP SCHEMA public CASCADE"))
+        connection.execute(text("CREATE SCHEMA public"))
+
+    cfg = Config(ALEMBIC_INI)
+    # alembic.ini values use %-interpolation, so a literal % in the URL
+    # (e.g. an encoded password) must be written as %%.
+    cfg.set_main_option("sqlalchemy.url", settings.DATABASE_URL.replace("%", "%%"))
+    command.upgrade(cfg, "head")
+
     yield engine
     engine.dispose()
 
