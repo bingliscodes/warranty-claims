@@ -1,7 +1,7 @@
 # Warranty Claims App — Design
 
 **Date:** 2026-11-19
-**Status:** Approved by the owner on 2026-11-19
+**Status:** Approved by the owner on 2026-11-19. Amended 2026-11-19 with deployment readiness (§17), approved by the owner.
 **Source:** `warranty_wireframe_v2.excalidraw` (repo root), plus decisions made in conversation on 2026-11-19.
 
 **How to read this:** unmarked statements are the owner's decisions. **[Proposal]** marks Claude's calls, which the owner can overrule while reviewing.
@@ -72,6 +72,7 @@ The app replaces that:
 | Warranty company names | Free text with suggestions / list in a settings file / list reviewers manage | **Free text that suggests names used before.** Revisit after talking with Kim. |
 | Bad photos after submission | Nothing / reviewer excludes from export / reviewer deletes | **Exclude from export**, reversibly. Deleting can come later; the exclude flag already marks the photos involved. |
 | Photo size | Untouched originals / shrink on the phone | **Originals.** See how upload speed holds up. |
+| Production serving | A: one container, FastAPI serves the built frontend and `/api` / B: nginx container serves the built frontend and reverse-proxies `/api` to a separate backend container / C: frontend and API on separate domains | **B.** The owner has run this setup before. It mirrors the dev setup, where Vite proxies `/api`. C was ruled out because it breaks the same-origin session cookie and Origin check. See §17. |
 | Claim lifecycle | No status / reviewer-set status | **Reviewer-set status.** |
 | Time zone for the export month | One company time zone / tech's time zone | **The tech's time zone** at submission. |
 
@@ -243,7 +244,7 @@ The screens follow the wireframe's Review layout.
 
 ## 15. Deferred and next
 
-- **Next plan, after the demo to Kim:** deploy for a pilot with Kim and techs. That means hosting (DigitalOcean or Vultr), HTTPS and a real email service (check with IT).
+- **Next plan, after the demo to Kim:** deploy for a pilot with Kim and techs. That means hosting (DigitalOcean or Vultr), HTTPS and a real email service (check with IT). v1 prepares for it (§17), so that plan is mostly choosing a host and setting configuration.
 - **Entra ID sign-in.** It must land before any real data. Session length gets decided with IT at that point.
 - **Pending Kim:**
   - Whether warranty companies need their own filename patterns.
@@ -257,3 +258,58 @@ The screens follow the wireframe's Review layout.
 - Layout details beyond the wireframe.
 - Polling interval, page size, photo size and type limits, and the status filter's default.
 - Migration tooling, and exact route names and payload shapes, consistent with §14.
+
+## 17. Deployment readiness
+
+v1 still runs only on the laptop (§2). This section makes sure the code it produces can later be deployed by choosing a host and setting configuration, without restructuring. Hosting, HTTPS and the email provider stay in the next plan.
+
+**Production shape (owner's decision: option B in §4)**
+- Two app containers, plus the database and object storage:
+  - **`frontend`:** nginx serving the built frontend (`npm run build` output). Any path that isn't a file falls back to `index.html` so client-side routes work. `/api/` is reverse-proxied to the backend. It's the only container the outside world reaches.
+  - **`backend`:** FastAPI under uvicorn. It's reachable only from nginx, on the internal network, never published on a host port.
+- Photos never pass through nginx: they upload and download straight to object storage through pre-signed URLs. The photo zip export does pass through nginx.
+- Development is unchanged: Vite's dev server with its `/api` proxy, plus `uvicorn --reload`.
+
+**[Proposal] Details of the production shape**
+- **Images are built in multiple stages.** The frontend image is Node for the build, then `nginx:alpine` with only the built files and `nginx.conf`. The backend image is `python:3.12-slim` installing from the lockfile.
+- **The images don't handle HTTPS.** nginx listens on plain HTTP inside the container. HTTPS is added in front by the deployment plan, either with certbot on the host or with the host's load balancer. The images stay the same either way.
+- **nginx settings:** a longer read timeout on `/api/` for large zip exports, response buffering off for the export so the zip streams, and long-lived caching only on Vite's content-hashed `assets/` files, never on `index.html`.
+- **Proxy headers:** uvicorn runs with `--proxy-headers`, trusting forwarded headers. That's safe because only nginx can reach the backend.
+- **One uvicorn worker.** Reviewer email runs as an in-process background task (§11), which is fine for a single instance at pilot scale.
+- **Migrations run before the server starts,** in the backend container's entrypoint (`alembic upgrade head`, then uvicorn). That's safe with one instance. Running several instances would need a separate migration step.
+- **A Compose profile runs the production setup locally.** `docker compose --profile app up --build` builds and runs both app containers against the local Postgres, MinIO and Mailpit, so the production setup is exercised before any host is involved. The plain `docker compose up -d` still starts only the dev services.
+
+**[Proposal] Configuration that is safe in production**
+- **An `APP_ENV` setting,** `development` by default or `production`.
+- **When `APP_ENV=production`, the backend refuses to start** if any of these is true:
+  - `SESSION_COOKIE_SECURE` is false;
+  - `APP_BASE_URL` or any entry in `ALLOWED_ORIGINS` isn't `https://`;
+  - the S3 keys or the database password are still the development defaults (`minioadmin`, `warranty`).
+
+  A missing variable fails loudly instead of quietly using dev values.
+- `.env.example` documents every setting and marks the ones production must set.
+
+**[Proposal] Bucket setup in code**
+- **A backend command, `python -m app.setup_bucket`,** makes the bucket match what the app needs:
+  - creates it if it's missing;
+  - applies the 7-day expiry on `uploads/`;
+  - applies a CORS rule allowing `ALLOWED_ORIGINS` to POST uploads and GET downloads.
+- It's safe to run repeatedly. Dev uses it in place of the `mc` commands in `minio-init`, and the deployment plan runs it once against DigitalOcean Spaces or Vultr.
+- MinIO doesn't support per-bucket CORS rules (it allows all origins by default). The command logs that and carries on, so it works against both.
+
+**[Proposal] Reproducible builds**
+- **The backend uses `uv`,** with dependencies in `pyproject.toml` and exact versions locked in a committed `uv.lock`. The Docker image installs from that lock.
+  - `uv` is already on the laptop, and it fetches the right Python itself. The laptop's default `python3` is 3.9, so the plan's `python -m venv` would have built a venv on an unsupported Python.
+  - Dev commands become `uv sync` and `uv run pytest`.
+- **The frontend's `package-lock.json` is committed,** and the image installs with `npm ci`.
+
+**[Proposal] Migrations are what the tests run against**
+- The test database is built with `alembic upgrade head`, not `create_all`, so a broken migration fails the tests instead of failing the deploy.
+- A test checks that the migrations and the models match (Alembic's autogenerate comparison finds no differences).
+
+**[Proposal] Health checks**
+- `GET /api/health` also checks the database connection. It returns 503 if the database is unreachable, so a host or load balancer can tell when the app is down.
+
+**Not in v1 (deployment plan)**
+- Choosing the host, setting up HTTPS and the domain, the production email provider, backups, and monitoring.
+- Entra ID sign-in, which must land before the pilot takes real claims (§6).
