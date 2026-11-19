@@ -1,6 +1,6 @@
 # Warranty Claims App v1 Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** Build this plan one task at a time and stop after each task for the owner's review. Follow "How we build" in `CLAUDE.md`, which overrides the continuous-execution rule in the superpowers execution skills. Review depth for each task is in "Build order and review depth" below. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build v1 of the warranty claims app. Techs file claims with photos from an iPhone. Reviewers edit them, chat with the tech, and export correctly named photos. Everything runs on the owner's laptop in test mode.
 
@@ -85,6 +85,39 @@
    - An export where every photo is excluded is refused.
    - Tests: Task 5, Task 7.
 5. **A tech in another time zone near month end:** MM/YY follows the tech's `submission_tz`, and an invalid zone is rejected at submit. Tests: Task 5, Task 6.
+
+## Build order and review depth
+
+Tasks are built in order and one at a time. After each task there's a review with the owner, at one of three depths:
+
+- **Walk-through:** the code holds the app's architecture or business rules. Explain:
+  - how a request or action flows through the new code;
+  - why it's shaped that way, and what the alternatives were;
+  - the few places that matter most;
+  - what the tests prove.
+
+  The owner reads the whole diff.
+- **Summary:** setup, wiring or glue. Say what was added and where, point out anything non-obvious, and show the test results. The owner skims the diff.
+- **In the browser:** a screen. Demo it first (on the iPhone for intake), then walk through its state and data flow rather than its markup. Large screens are reviewed one part at a time.
+
+| Task | Depth | Focus |
+|---|---|---|
+| 1. Dev services and backend skeleton | Summary | How config and the test database fixture work |
+| 2. Database models and first migration | Walk-through | The data model: columns vs `form_data` |
+| 3. Anonymous sessions and the current user | Walk-through | Security: cookies, token hashing, the origin check, role guards |
+| 4. Photo storage and upload URLs | Walk-through | The upload flow: pre-signed POST, `uploads/` → `claims/` |
+| 5. Export filename rules | Walk-through | The naming rules Kim relies on |
+| 6. Claim submission, listing and search | Walk-through | Who can see what; how photo keys are checked at submit |
+| 7. Photos on submitted claims, reviewer edits and export | Walk-through | Edit permissions; how the zip is built |
+| 8. Chat thread and unread markers | Walk-through | How unread is computed |
+| 9. Reviewer email on new claims | Summary | What the email contains; why a failure never blocks submit |
+| 10. VIN decode lookup | Summary | Calling vPIC and handling its failures |
+| 11. Frontend skeleton, themes, role picker and profile | Summary | How the frontend calls the API and checks the session |
+| 12. OCR and VIN helpers | Summary | How `extractVin` picks a candidate |
+| 13. Intake draft and photo upload pipeline | Walk-through | State that survives a reload, mid-upload too |
+| 14. Intake screens | In the browser | One phase at a time |
+| 15. Claims list | In the browser | Unread markers and search |
+| 16. Claim detail, and the end-to-end check | In the browser | One panel at a time: fields, photos, chat, export |
 
 ---
 
