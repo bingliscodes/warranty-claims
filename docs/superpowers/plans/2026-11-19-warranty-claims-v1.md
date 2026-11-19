@@ -11,11 +11,12 @@
 - **OCR:** runs in the browser (Tesseract.js).
 - **VIN decoding:** goes through the backend to NHTSA vPIC.
 - **Reviewer email:** sent over SMTP to a local mail catcher.
+- **Production shape (prepared, not deployed):** an nginx container serves the built frontend and reverse-proxies `/api/` to a separate backend container, which is never published on a host port. Task 17 builds both images and runs them locally under a Compose profile.
 
 **Tech Stack:**
-- **Backend:** Python 3.12+, FastAPI, Uvicorn, SQLAlchemy 2, Pydantic 2, pydantic-settings, Alembic, psycopg 3, boto3, httpx, pytest, moto.
+- **Backend:** Python 3.12+ managed by `uv` (committed `uv.lock`), FastAPI, Uvicorn, SQLAlchemy 2, Pydantic 2, pydantic-settings, Alembic, psycopg 3, boto3, httpx, pytest, moto.
 - **Frontend:** Node 22+, React, Vite, TypeScript, Tailwind CSS, shadcn/ui, React Router, TanStack Query, Tesseract.js, Vitest, React Testing Library.
-- **Docker Compose:** Postgres 16, MinIO, Mailpit.
+- **Docker Compose:** Postgres 16, MinIO, Mailpit. The `app` profile adds the production `frontend` (nginx) and `backend` containers.
 
 **Spec:** `docs/superpowers/specs/2026-11-19-warranty-claims-design.md`, approved 2026-11-19. It builds on `warranty_wireframe_v2.excalidraw`.
 
@@ -26,6 +27,14 @@
 **Platforms and versions**
 - Python ≥ 3.12, Node ≥ 22, Postgres 16 via Docker Compose.
 - The backend depends on `tzdata`, because Windows has no system time-zone database.
+- Backend dependencies are managed with `uv`: ranges in `pyproject.toml`, exact versions in a committed `uv.lock`, Python pinned to `3.12` in `backend/.python-version`. Backend commands run through `uv run`. The laptop's default `python3` is 3.9, so never use a bare `python -m venv`.
+- The frontend's `package-lock.json` is committed. Images install with `uv sync --frozen` and `npm ci`.
+
+**Deployment readiness (design §17)**
+- `APP_ENV` is `development` (default) or `production`. In production the backend refuses to start on unsafe settings (Task 1).
+- Tests build the database from the Alembic migrations, never `create_all` (Task 2).
+- Bucket setup (creation, `uploads/` expiry, CORS) lives in `python -m app.setup_bucket`, not in `mc` commands (Task 4).
+- Outside development, only nginx is reachable. The backend container publishes no host port.
 
 **API and test data**
 - All API routes live under `/api`. The frontend only calls relative `/api/...` paths.
@@ -102,10 +111,10 @@ Tasks are built in order and one at a time. After each task there's a review wit
 
 | Task | Depth | Focus |
 |---|---|---|
-| 1. Dev services and backend skeleton | Summary | How config and the test database fixture work |
-| 2. Database models and first migration | Walk-through | The data model: columns vs `form_data` |
+| 1. Dev services and backend skeleton | Summary | How config works, including the `APP_ENV=production` checks; the test database fixture; the health check |
+| 2. Database models and first migration | Walk-through | The data model: columns vs `form_data`; tests running on the migrations |
 | 3. Anonymous sessions and the current user | Walk-through | Security: cookies, token hashing, the origin check, role guards |
-| 4. Photo storage and upload URLs | Walk-through | The upload flow: pre-signed POST, `uploads/` → `claims/` |
+| 4. Photo storage and upload URLs | Walk-through | The upload flow: pre-signed POST, `uploads/` → `claims/`; bucket setup |
 | 5. Export filename rules | Walk-through | The naming rules Kim relies on |
 | 6. Claim submission, listing and search | Walk-through | Who can see what; how photo keys are checked at submit |
 | 7. Photos on submitted claims, reviewer edits and export | Walk-through | Edit permissions; how the zip is built |
@@ -118,6 +127,7 @@ Tasks are built in order and one at a time. After each task there's a review wit
 | 14. Intake screens | In the browser | One phase at a time |
 | 15. Claims list | In the browser | Unread markers and search |
 | 16. Claim detail, and the end-to-end check | In the browser | One panel at a time: fields, photos, chat, export |
+| 17. Production containers | Walk-through | `nginx.conf`, the backend entrypoint, and what's reachable from outside |
 
 ---
 
@@ -126,7 +136,8 @@ Tasks are built in order and one at a time. After each task there's a review wit
 ```
 .gitignore  .env.example  docker-compose.yml  docker/postgres-init/01-test-db.sql  README.md
 backend/
-  pyproject.toml  alembic.ini  alembic/env.py  alembic/versions/0001_initial.py
+  pyproject.toml  uv.lock  .python-version  alembic.ini  alembic/env.py  alembic/versions/0001_initial.py
+  Dockerfile  .dockerignore  docker-entrypoint.sh      (Task 17)
   app/
     config.py            Settings
     db.py                Base, session factory, get_db
@@ -134,6 +145,7 @@ backend/
     models.py            ORM models and enums
     auth.py              sessions, current-user dependencies, /api/session, /api/me, Origin check
     storage.py           PhotoStorage (S3), build_storage, get_storage
+    setup_bucket.py      ensure_bucket and the `python -m app.setup_bucket` command
     uploads.py           POST /api/uploads
     claims/schemas.py    request/response models, US state codes, VIN rule
     claims/access.py     get_visible_claim
@@ -147,7 +159,8 @@ backend/
     vin_decode.py        NHTSA vPIC lookup and route
   tests/conftest.py, tests/test_*.py
 frontend/
-  vite.config.ts  components.json  src/main.tsx  src/App.tsx  src/index.css
+  vite.config.ts  components.json  package-lock.json  src/main.tsx  src/App.tsx  src/index.css
+  Dockerfile  .dockerignore  nginx.conf                (Task 17)
   src/components/ui/     shadcn components (generated)
   src/components/        NavBar.tsx TestModeBanner.tsx ThemeToggle.tsx PhotoSlot.tsx
   src/theme/             ThemeProvider.tsx
@@ -168,30 +181,39 @@ frontend/
 **Files:**
 - Create: `.env.example`, `docker-compose.yml`, `docker/postgres-init/01-test-db.sql`, `README.md`.
 - Already in the repo: `.gitignore` and `CLAUDE.md`. Check `.gitignore` matches Step 1 and leave `CLAUDE.md` as is.
-- Create: `backend/pyproject.toml`, `backend/app/__init__.py`, `backend/app/config.py`, `backend/app/db.py`, `backend/app/main.py`.
-- Test: `backend/tests/conftest.py`, `backend/tests/test_health.py`.
+- Create: `backend/pyproject.toml`, `backend/uv.lock` (generated), `backend/.python-version`, `backend/app/__init__.py`, `backend/app/config.py`, `backend/app/db.py`, `backend/app/main.py`.
+- Test: `backend/tests/conftest.py`, `backend/tests/test_health.py`, `backend/tests/test_config.py`.
 
 **Interfaces:**
 - **Produces `class Settings(BaseSettings)`** in `app/config.py`. It reads `.env`. Fields and defaults:
+  - `APP_ENV: Literal["development", "production"]="development"`
   - `DATABASE_URL="postgresql+psycopg://warranty:warranty@localhost:5432/warranty"`
   - `SESSION_COOKIE_SECURE=False`, `SESSION_TTL_DAYS=365`
   - `ALLOWED_ORIGINS: list[str]=["http://localhost:5173"]`, `APP_BASE_URL="http://localhost:5173"`
   - `S3_ENDPOINT_URL: str | None="http://localhost:9000"`, `S3_REGION="us-east-1"`, `S3_BUCKET="warranty-photos"`, `S3_ACCESS_KEY_ID="minioadmin"`, `S3_SECRET_ACCESS_KEY="minioadmin"`, `MAX_UPLOAD_BYTES=30_000_000`
   - `SMTP_HOST="localhost"`, `SMTP_PORT=1025`, `SMTP_USERNAME: str | None=None`, `SMTP_PASSWORD: str | None=None`, `SMTP_STARTTLS=False`, `MAIL_FROM="warranty-app@localhost"`
   - `VPIC_BASE_URL="https://vpic.nhtsa.dot.gov/api"`
+- **Production checks:** a `model_validator(mode="after")` on `Settings`. When `APP_ENV == "production"`, it collects every problem below and raises one `ValueError` naming each offending setting:
+  - `SESSION_COOKIE_SECURE` is false.
+  - `APP_BASE_URL` doesn't start with `https://`, or any `ALLOWED_ORIGINS` entry doesn't.
+  - `S3_ACCESS_KEY_ID` or `S3_SECRET_ACCESS_KEY` is `minioadmin`.
+  - The `DATABASE_URL` password (read with `sqlalchemy.engine.make_url`) is `warranty`.
+
+  In development it checks nothing.
 - **Produces in `app/db.py`:**
   - `class Base(DeclarativeBase)`
   - `make_session_factory(url: str) -> sessionmaker[Session]`
   - `get_db(request: Request) -> Iterator[Session]`, which yields from `request.app.state.session_factory`.
 - **Produces in `app/main.py`:**
   - `create_app(settings: Settings | None = None) -> FastAPI`, which sets `app.state.settings` and `app.state.session_factory`.
+  - `GET /api/health`: runs `SELECT 1` through `get_db`. Returns 200 `{"status": "ok"}`, or 503 `{"status": "unavailable"}` on any `SQLAlchemyError`.
   - `get_settings(request: Request) -> Settings`
   - Module-level `app = create_app()`.
 - **Produces fixtures in `tests/conftest.py`:**
   - `settings`, session-scoped:
     - `DATABASE_URL` from the `TEST_DATABASE_URL` environment variable, defaulting to `postgresql+psycopg://warranty:warranty@localhost:5432/warranty_test`.
     - `S3_ENDPOINT_URL=None`, `S3_BUCKET="test-bucket"`, `S3_ACCESS_KEY_ID="testing"`, `S3_SECRET_ACCESS_KEY="testing"`, `APP_BASE_URL="http://app.test"`, `SMTP_USERNAME=None`.
-  - `engine`, session-scoped: runs `Base.metadata.drop_all` then `create_all`.
+  - `engine`, session-scoped: `create_engine(settings.DATABASE_URL)`, disposed at the end. Task 2 adds building the schema from the migrations.
   - `db`: each test runs inside one connection-level transaction that is rolled back afterwards, using `Session(bind=connection, join_transaction_mode="create_savepoint")`.
   - `app`: `create_app(settings)`, with `get_db` overridden to yield `db` and `app.state.session_factory` set to return `db` wrapped so that `close()` does nothing.
   - `client`: `TestClient(app)`.
@@ -199,45 +221,91 @@ frontend/
 - [ ] **Step 1: Add dev services and repo files**
   - **`.gitignore`** (already exists; confirm it lists): `.env`, `*.pdf`, `.venv/`, `__pycache__/`, `.pytest_cache/`, `node_modules/`, `dist/`, `coverage/`.
   - **`docker-compose.yml`:**
-    - `postgres`: image `postgres:16`; `POSTGRES_USER`, `POSTGRES_PASSWORD` and `POSTGRES_DB` all `warranty`; port 5432; a named volume; mounts `./docker/postgres-init` at `/docker-entrypoint-initdb.d`. `01-test-db.sql` contains `CREATE DATABASE warranty_test;`.
+    - `postgres`: image `postgres:16`; `POSTGRES_USER`, `POSTGRES_PASSWORD` and `POSTGRES_DB` all `warranty`; port 5432; a named volume; mounts `./docker/postgres-init` at `/docker-entrypoint-initdb.d`. `01-test-db.sql` contains `CREATE DATABASE warranty_test;`. A healthcheck runs `pg_isready -U warranty`, which Task 17's backend waits on.
     - `minio`: image `minio/minio`, command `server /data --console-address :9001`, ports 9000 and 9001, root user and password `minioadmin`.
-    - `minio-init`: image `minio/mc`, depends on `minio`. Creates bucket `warranty-photos`, then a lifecycle rule expiring prefix `uploads/` after 7 days (`mc ilm rule add --expire-days 7 --prefix uploads/ local/warranty-photos`).
     - `mailpit`: image `axllent/mailpit`, ports 1025 (SMTP) and 8025 (web).
-  - **`.env.example`:** every `Settings` field with its default.
+    - No bucket-setup service: Task 4's `python -m app.setup_bucket` creates the bucket.
+  - **`.env.example`:** every `Settings` field with its default. A comment marks the ones production must change: `APP_ENV`, `SESSION_COOKIE_SECURE`, `APP_BASE_URL`, `ALLOWED_ORIGINS`, `DATABASE_URL`, the S3 settings, the SMTP settings and `MAIL_FROM`.
 
-- [ ] **Step 2: Write `backend/pyproject.toml`**
+- [ ] **Step 2: Write `backend/pyproject.toml` and set up the environment with `uv`**
+  - `requires-python = ">=3.12"`, and `backend/.python-version` containing `3.12`.
   - Dependencies: `fastapi>=0.115`, `uvicorn[standard]>=0.32`, `sqlalchemy>=2.0.36`, `psycopg[binary]>=3.2`, `alembic>=1.14`, `pydantic>=2.9`, `pydantic-settings>=2.6`, `email-validator>=2.2`, `boto3>=1.35`, `httpx>=0.27`, `tzdata>=2024.2`.
-  - Optional `dev` extra: `pytest>=8.3`, `moto[s3]>=5.0`.
+  - A `[dependency-groups]` `dev` group: `pytest>=8.3`, `moto[s3]>=5.0`.
   - Add `[tool.pytest.ini_options] testpaths = ["tests"]`.
-  - Run: `docker compose up -d`, then in `backend/`: `python -m venv .venv`, activate it, `pip install -e ".[dev]"`.
+  - Run: `docker compose up -d`, then in `backend/`: `uv sync`. It creates `.venv` on Python 3.12, installs both groups and writes `uv.lock`.
 
 - [ ] **Step 3: Write the failing test**
 
 ```python
 # backend/tests/test_health.py
+from fastapi.testclient import TestClient
+from app.main import create_app
+
 def test_health(client):
     response = client.get("/api/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+def test_health_reports_database_down(settings):
+    down = settings.model_copy(update={"DATABASE_URL": "postgresql+psycopg://warranty:warranty@127.0.0.1:1/warranty"})
+    response = TestClient(create_app(down)).get("/api/health")
+    assert response.status_code == 503
+    assert response.json() == {"status": "unavailable"}
+```
+
+```python
+# backend/tests/test_config.py
+import pytest
+from pydantic import ValidationError
+from app.config import Settings
+
+SAFE = dict(APP_ENV="production", SESSION_COOKIE_SECURE=True,
+            APP_BASE_URL="https://claims.example.com", ALLOWED_ORIGINS=["https://claims.example.com"],
+            DATABASE_URL="postgresql+psycopg://warranty:s3cret-db@db.example.com:5432/warranty",
+            S3_ACCESS_KEY_ID="AKEXAMPLE", S3_SECRET_ACCESS_KEY="example-secret")
+
+def test_development_accepts_dev_defaults():
+    assert Settings(_env_file=None).APP_ENV == "development"
+
+def test_production_accepts_safe_settings():
+    assert Settings(_env_file=None, **SAFE).APP_ENV == "production"
+
+def test_production_rejects_dev_defaults_and_names_each_problem():
+    with pytest.raises(ValidationError) as exc:
+        Settings(_env_file=None, APP_ENV="production")
+    message = str(exc.value)
+    for name in ["SESSION_COOKIE_SECURE", "APP_BASE_URL", "ALLOWED_ORIGINS",
+                 "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY", "DATABASE_URL"]:
+        assert name in message
+
+@pytest.mark.parametrize("override", [
+    {"SESSION_COOKIE_SECURE": False},
+    {"ALLOWED_ORIGINS": ["https://claims.example.com", "http://192.168.1.50:5173"]},
+    {"S3_SECRET_ACCESS_KEY": "minioadmin"},
+    {"DATABASE_URL": "postgresql+psycopg://warranty:warranty@db.example.com:5432/warranty"},
+])
+def test_production_rejects_each_unsafe_setting(override):
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, **{**SAFE, **override})
 ```
 
 - [ ] **Step 4: Run it to see it fail**
 
-Run: `cd backend && python -m pytest tests/test_health.py -v`
-Expected: an error importing `app.main`.
+Run: `cd backend && uv run pytest tests/test_health.py tests/test_config.py -v`
+Expected: errors importing `app.main` and `app.config`.
 
-- [ ] **Step 5: Implement `Settings`, `db.py`, `create_app` with `GET /api/health`, and the conftest fixtures**, as described under Interfaces.
+- [ ] **Step 5: Implement `Settings` (with the production checks), `db.py`, `create_app` with `GET /api/health`, and the conftest fixtures**, as described under Interfaces.
 
 - [ ] **Step 6: Run it to see it pass**
 
-Run: `python -m pytest tests/test_health.py -v`
-Expected: PASS.
+Run: `uv run pytest tests/test_health.py tests/test_config.py -v`
+Expected: all pass.
 
 - [ ] **Step 7: Write `README.md`**
   - **Dev setup:**
     - `docker compose up -d`.
-    - Create the backend venv.
-    - `uvicorn app.main:app --reload --port 8000`.
+    - In `backend/`: `uv sync` (installs `uv`-managed Python 3.12 if needed), then `uv run uvicorn app.main:app --reload --port 8000`.
+    - Tests: `uv run pytest`.
     - `npm run dev` (from Task 11).
     - Mailpit is at `http://localhost:8025`, the MinIO console at `http://localhost:9001`.
   - **"Testing on your iPhone" section:**
@@ -259,8 +327,8 @@ git commit -m "chore: add dev services and backend skeleton"
 
 **Files:**
 - Create: `backend/app/models.py`, `backend/alembic.ini`, `backend/alembic/env.py`, `backend/alembic/versions/0001_initial.py`.
-- Modify: `backend/tests/conftest.py`. Import `app.models` before `create_all`.
-- Test: `backend/tests/test_models.py`.
+- Modify: `backend/tests/conftest.py`. The `engine` fixture builds the schema from the migrations.
+- Test: `backend/tests/test_models.py`, `backend/tests/test_migrations.py`.
 
 **Interfaces:**
 - **Consumes:** `Base` (Task 1).
@@ -278,6 +346,10 @@ git commit -m "chore: add dev services and backend skeleton"
   - **`Photo`** (table `photos`): `id`, `claim_id` (FK), `claim`, `kind: PhotoKind`, `storage_key: str(255)` (unique), `content_type: str(50)`, `original_filename: str(255) | None`, `description: str(200) | None`, `excluded: bool = False`, `added_by_id` (FK to users), `added_by`, `created_at`.
   - **`ChatMessage`** (table `chat_messages`): `id`, `claim_id` (FK), `sender_id` (FK), `sender`, `contents: Text`, `created_at`.
   - **`ClaimRead`** (table `claim_reads`): primary key (`user_id`, `claim_id`), `last_message_id: int = 0`, `last_photo_id: int = 0`.
+- **Alembic wiring:**
+  - `alembic.ini` has `script_location = %(here)s/alembic` and an empty `sqlalchemy.url`.
+  - `env.py` uses `config.get_main_option("sqlalchemy.url") or Settings().DATABASE_URL`, imports `app.models`, and sets `target_metadata = Base.metadata`.
+- **Changes the `engine` fixture:** after creating the engine, it runs `DROP SCHEMA public CASCADE; CREATE SCHEMA public`, then `alembic.command.upgrade(cfg, "head")`. `cfg` is a `Config` for `backend/alembic.ini`, found relative to `conftest.py`, with `sqlalchemy.url` set to the test URL (`%` escaped as `%%`).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -322,27 +394,39 @@ def test_one_read_state_per_user_and_claim(db):
         db.flush()
 ```
 
+```python
+# backend/tests/test_migrations.py
+from alembic.autogenerate import compare_metadata
+from alembic.migration import MigrationContext
+import app.models  # noqa: F401
+from app.db import Base
+
+def test_migrations_match_models(engine):
+    with engine.connect() as connection:
+        assert compare_metadata(MigrationContext.configure(connection), Base.metadata) == []
+```
+
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `python -m pytest tests/test_models.py -v`
-Expected: an error importing `app.models`.
+Run: `uv run pytest tests/test_models.py tests/test_migrations.py -v`
+Expected: errors importing `app.models`.
 
-- [ ] **Step 3: Implement `app/models.py` per Interfaces, and import it in conftest before `create_all`.**
+- [ ] **Step 3: Implement `app/models.py` per Interfaces.**
 
-- [ ] **Step 4: Run them to see them pass**
-
-Run: `python -m pytest tests/test_models.py -v`
-Expected: 3 passed.
-
-- [ ] **Step 5: Create the first migration**
-  - `alembic init alembic`.
-  - In `env.py`, take the URL from `Settings().DATABASE_URL` and set `target_metadata = Base.metadata`.
-  - `alembic revision --autogenerate -m "initial"`, then rename the file to `0001_initial.py`.
+- [ ] **Step 4: Create the first migration and wire the tests to it**
+  - `uv run alembic init alembic`, then set up `alembic.ini` and `env.py` per Interfaces.
+  - `uv run alembic revision --autogenerate -m "initial"` against the empty dev database, then rename the file to `0001_initial.py`.
   - Check that it creates the six tables, the unique constraints and the `vin` index.
+  - Change the `engine` fixture per Interfaces.
 
-- [ ] **Step 6: Verify the migration matches the models**
+- [ ] **Step 5: Run them to see them pass**
 
-Run: `alembic upgrade head && alembic check`
+Run: `uv run pytest -v`
+Expected: all pass, including `test_migrations_match_models`.
+
+- [ ] **Step 6: Bring the dev database up to date**
+
+Run: `uv run alembic upgrade head && uv run alembic check`
 Expected: `No new upgrade operations detected.`
 
 - [ ] **Step 7: Commit**
@@ -451,14 +535,14 @@ def test_cross_origin_writes_rejected(client):
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `python -m pytest tests/test_auth.py -v`
+Run: `uv run pytest tests/test_auth.py -v`
 Expected: an error importing `app.auth`.
 
 - [ ] **Step 3: Implement `app/auth.py` and the fixtures per Interfaces.** Include the router and add `OriginCheckMiddleware` in `create_app`.
 
 - [ ] **Step 4: Run them to see them pass**
 
-Run: `python -m pytest -v`
+Run: `uv run pytest -v`
 Expected: all pass.
 
 - [ ] **Step 5: Commit**
@@ -473,9 +557,9 @@ git commit -m "feat: anonymous sessions with role picker and current-user checks
 ### Task 4: Photo storage and upload URLs
 
 **Files:**
-- Create: `backend/app/storage.py`, `backend/app/uploads.py`.
-- Modify: `backend/app/main.py` (router; `app.state.storage = build_storage(settings)`) and `backend/tests/conftest.py` (fixtures).
-- Test: `backend/tests/test_storage.py`, `backend/tests/test_uploads.py`.
+- Create: `backend/app/storage.py`, `backend/app/uploads.py`, `backend/app/setup_bucket.py`.
+- Modify: `backend/app/main.py` (router; `app.state.storage = build_storage(settings)`), `backend/tests/conftest.py` (fixtures) and `README.md` (dev setup step).
+- Test: `backend/tests/test_storage.py`, `backend/tests/test_uploads.py`, `backend/tests/test_setup_bucket.py`.
 
 **Interfaces:**
 - **Consumes:** `get_current_user` (Task 3), `Settings`.
@@ -489,6 +573,12 @@ git commit -m "feat: anonymous sessions with role picker and current-user checks
     - `iter_object(key: str, chunk_size: int = 1_048_576) -> Iterator[bytes]`.
   - **`build_storage(settings: Settings) -> PhotoStorage`:** a boto3 client with `Config(signature_version="s3v4", s3={"addressing_style": "path"})`, plus endpoint, region and keys from settings.
   - **`get_storage(request: Request) -> PhotoStorage`.**
+- **Produces in `app/setup_bucket.py`:**
+  - **`ensure_bucket(storage: PhotoStorage, region: str, allowed_origins: list[str]) -> None`.** Safe to run repeatedly:
+    - If `head_bucket` raises a 404 `ClientError`, creates the bucket. It passes `CreateBucketConfiguration={"LocationConstraint": region}` unless `region == "us-east-1"`.
+    - Puts the lifecycle configuration: one rule, `ID="expire-uploads"`, `Filter={"Prefix": "uploads/"}`, `Status="Enabled"`, `Expiration={"Days": 7}`.
+    - Puts the CORS configuration: one rule with `AllowedOrigins=allowed_origins`, `AllowedMethods=["GET", "POST"]`, `AllowedHeaders=["*"]`, `ExposeHeaders=["ETag"]` and `MaxAgeSeconds=3000`. If that raises a `ClientError` with code `NotImplemented` (MinIO), it logs a warning that the store allows all origins by default, and returns normally.
+  - **`main() -> None`**, run by `python -m app.setup_bucket`: builds `Settings()` and calls `ensure_bucket(build_storage(settings), settings.S3_REGION, settings.ALLOWED_ORIGINS)`.
 - **Produces in `app/uploads.py`:** `POST /api/uploads`, any signed-in user.
   - Body: `UploadRequest{content_type: Literal["image/jpeg", "image/png"], filename: str 1–255}`.
   - Returns 201 `UploadOut{key, url, fields}`.
@@ -542,22 +632,62 @@ def test_download_url_names_the_file(storage):
     assert "response-content-disposition=attachment" in url
 ```
 
+```python
+# backend/tests/test_setup_bucket.py
+import boto3, pytest
+from botocore.exceptions import ClientError
+from moto import mock_aws
+from app.setup_bucket import ensure_bucket
+from app.storage import PhotoStorage
+
+ORIGINS = ["http://192.168.1.50:5173"]
+
+@pytest.fixture
+def empty_storage():
+    with mock_aws():
+        yield PhotoStorage(boto3.client("s3", region_name="us-east-1"), "fresh-bucket")
+
+def test_creates_bucket_with_upload_expiry_and_cors(empty_storage):
+    ensure_bucket(empty_storage, "us-east-1", ORIGINS)
+    rules = empty_storage.client.get_bucket_lifecycle_configuration(Bucket="fresh-bucket")["Rules"]
+    assert [(r["Filter"]["Prefix"], r["Expiration"]["Days"], r["Status"]) for r in rules] == [("uploads/", 7, "Enabled")]
+    cors = empty_storage.client.get_bucket_cors(Bucket="fresh-bucket")["CORSRules"]
+    assert cors[0]["AllowedOrigins"] == ORIGINS and set(cors[0]["AllowedMethods"]) == {"GET", "POST"}
+
+def test_running_twice_is_safe(empty_storage):
+    ensure_bucket(empty_storage, "us-east-1", ORIGINS)
+    ensure_bucket(empty_storage, "us-east-1", ORIGINS)
+    assert len(empty_storage.client.get_bucket_lifecycle_configuration(Bucket="fresh-bucket")["Rules"]) == 1
+
+def test_store_without_bucket_cors_still_gets_lifecycle(empty_storage, monkeypatch):
+    def not_implemented(**kwargs):
+        raise ClientError({"Error": {"Code": "NotImplemented", "Message": "x"}}, "PutBucketCors")
+    monkeypatch.setattr(empty_storage.client, "put_bucket_cors", not_implemented)
+    ensure_bucket(empty_storage, "us-east-1", ORIGINS)
+    assert empty_storage.client.get_bucket_lifecycle_configuration(Bucket="fresh-bucket")["Rules"]
+```
+
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `python -m pytest tests/test_storage.py tests/test_uploads.py -v`
-Expected: an error importing `app.storage`.
+Run: `uv run pytest tests/test_storage.py tests/test_uploads.py tests/test_setup_bucket.py -v`
+Expected: errors importing `app.storage` and `app.setup_bucket`.
 
-- [ ] **Step 3: Implement `storage.py`, `uploads.py` and the fixtures per Interfaces.**
+- [ ] **Step 3: Implement `storage.py`, `uploads.py`, `setup_bucket.py` and the fixtures per Interfaces.**
 
 - [ ] **Step 4: Run them to see them pass**
 
-Run: `python -m pytest -v`
+Run: `uv run pytest -v`
 Expected: all pass.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Set up the dev bucket against MinIO**
+  - Run: `uv run python -m app.setup_bucket`, twice.
+  - Expected: both runs exit 0. The CORS step either succeeds or logs the MinIO warning. The MinIO console (`http://localhost:9001`) shows bucket `warranty-photos` with the `uploads/` expiry rule.
+  - Add the command to the README's dev setup, after `uv sync`: "run once, and again whenever `ALLOWED_ORIGINS` changes."
+
+- [ ] **Step 6: Commit**
 
 ```bash
-git add backend/app backend/tests
+git add backend/app backend/tests README.md
 git commit -m "feat: pre-signed photo uploads to S3-compatible storage"
 ```
 
@@ -644,7 +774,7 @@ def test_zip_filename():
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `python -m pytest tests/test_naming.py -v`
+Run: `uv run pytest tests/test_naming.py -v`
 Expected: an error importing `app.photos.naming`.
 
 - [ ] **Step 3: Implement `app/photos/naming.py` with these rules:**
@@ -665,7 +795,7 @@ Expected: an error importing `app.photos.naming`.
 
 - [ ] **Step 4: Run them to see them pass**
 
-Run: `python -m pytest tests/test_naming.py -v`
+Run: `uv run pytest tests/test_naming.py -v`
 Expected: all pass.
 
 - [ ] **Step 5: Commit**
@@ -835,7 +965,7 @@ def test_warranty_company_suggestions(tech, tech_client, make_claim):
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `python -m pytest tests/test_claims_create.py tests/test_claims_list.py -v`
+Run: `uv run pytest tests/test_claims_create.py tests/test_claims_list.py -v`
 Expected: FAIL, with 404s on `/api/claims` or a missing `claim_payload` fixture.
 
 - [ ] **Step 3: Implement the schemas, `get_visible_claim`, `attach_photos`, the routes and the fixtures per Interfaces.**
@@ -844,7 +974,7 @@ Expected: FAIL, with 404s on `/api/claims` or a missing `claim_payload` fixture.
 
 - [ ] **Step 4: Run them to see them pass**
 
-Run: `python -m pytest -v`
+Run: `uv run pytest -v`
 Expected: all pass.
 
 - [ ] **Step 5: Commit**
@@ -991,14 +1121,14 @@ def test_export_refused_when_everything_excluded(reviewer_client, claim):
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `python -m pytest tests/test_claim_edits.py tests/test_photos.py -v`
+Run: `uv run pytest tests/test_claim_edits.py tests/test_photos.py -v`
 Expected: FAIL with 405 or 404 on the new routes.
 
 - [ ] **Step 3: Implement `ClaimUpdate`, `PhotoOut`, `PhotoAdd`, `PhotoUpdate`, the PATCH route and `app/photos/routes.py` per Interfaces.**
 
 - [ ] **Step 4: Run them to see them pass**
 
-Run: `python -m pytest -v`
+Run: `uv run pytest -v`
 Expected: all pass.
 
 - [ ] **Step 5: Commit**
@@ -1119,14 +1249,14 @@ def test_claim_detail_carries_unread(tech, reviewer_client, make_claim):
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `python -m pytest tests/test_conversations.py tests/test_unread.py -v`
+Run: `uv run pytest tests/test_conversations.py tests/test_unread.py -v`
 Expected: FAIL with 404s, or a `KeyError: 'unread'`.
 
 - [ ] **Step 3: Implement `conversations.py`, `unread.py` and the `unread` field per Interfaces.** Compute unread for a whole list page in one query, not one query per claim.
 
 - [ ] **Step 4: Run them to see them pass**
 
-Run: `python -m pytest -v`
+Run: `uv run pytest -v`
 Expected: all pass.
 
 - [ ] **Step 5: Commit**
@@ -1213,14 +1343,14 @@ def test_send_email_uses_smtp_settings(monkeypatch):
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `python -m pytest tests/test_notifications.py -v`
+Run: `uv run pytest tests/test_notifications.py -v`
 Expected: an error importing `app.notifications`.
 
 - [ ] **Step 3: Implement `notifications.py`, the background task and the `outbox` fixture per Interfaces.**
 
 - [ ] **Step 4: Run them to see them pass**
 
-Run: `python -m pytest -v`
+Run: `uv run pytest -v`
 Expected: all pass.
 
 - [ ] **Step 5: Commit**
@@ -1301,14 +1431,14 @@ def test_requires_session(client, vpic):
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `python -m pytest tests/test_vin_decode.py -v`
+Run: `uv run pytest tests/test_vin_decode.py -v`
 Expected: an error importing `app.vin_decode`.
 
 - [ ] **Step 3: Implement `vin_decode.py` per Interfaces.**
 
 - [ ] **Step 4: Run them to see them pass**
 
-Run: `python -m pytest -v`
+Run: `uv run pytest -v`
 Expected: all pass.
 
 - [ ] **Step 5: Commit**
@@ -1369,6 +1499,7 @@ git commit -m "feat: VIN year/make/model lookup through NHTSA vPIC"
   - `npx shadcn@latest add button input label card badge table textarea select popover command alert dropdown-menu separator radio-group`.
   - In `vite.config.ts`, set `server: { host: true, port: 5173, proxy: { "/api": "http://localhost:8000" } }` and `test: { environment: "jsdom", setupFiles: "./src/test/setup.ts", globals: true }`.
   - Add the script `"test": "vitest run"`.
+  - Keep `package-lock.json`. It's committed with the frontend, and Task 17's image installs from it with `npm ci`.
 
 - [ ] **Step 2: Write the failing tests**
 
@@ -2255,7 +2386,7 @@ Expected: failures for the missing modules.
 
 - [ ] **Step 4: Run the whole suite and the build**
 
-Run: `cd backend && python -m pytest -v`, then `cd ../frontend && npm test && npm run build`
+Run: `cd backend && uv run pytest -v`, then `cd ../frontend && npm test && npm run build`
 Expected: every test passes, and the build finishes without TypeScript errors.
 
 - [ ] **Step 5: End-to-end check on the laptop and iPhone.** Use the README's iPhone setup, in both light and dark themes:
@@ -2277,4 +2408,85 @@ Expected: every test passes, and the build finishes without TypeScript errors.
 ```bash
 git add frontend/src
 git commit -m "feat: claim detail with reviewer edits, photo export and chat"
+```
+
+---
+
+### Task 17: Production containers
+
+Carries out design §17's production shape: an nginx `frontend` container and a `backend` container, run locally under the Compose `app` profile. Hosting and HTTPS stay in the deployment plan.
+
+**Files:**
+- Create: `backend/Dockerfile`, `backend/.dockerignore`, `backend/docker-entrypoint.sh`, `frontend/Dockerfile`, `frontend/.dockerignore`, `frontend/nginx.conf`.
+- Modify: `docker-compose.yml`, `.env.example` (adds `LAN_IP`), `README.md`, `CLAUDE.md` (Commands).
+- Test: the verification steps below. No automated tests: everything this task adds is configuration, and the app behavior behind it is already tested.
+
+**Interfaces:**
+- **Consumes:** `Settings` and the production checks (Task 1), the migrations (Task 2), `python -m app.setup_bucket` (Task 4), `GET /api/health` (Task 1), the export route `GET /api/claims/{id}/photos/export` (Task 7), and `npm run build` (Task 11).
+- **Backend image (`backend/Dockerfile`):**
+  - Base `python:3.12-slim`. Copy the `uv` binary from `ghcr.io/astral-sh/uv:<version>`, pinned to the laptop's `uv --version`.
+  - Workdir `/app`. Install with `uv sync --frozen --no-dev` (copy `pyproject.toml` and `uv.lock` first so dependency layers cache), then copy `app/`, `alembic/`, `alembic.ini` and `docker-entrypoint.sh`.
+  - `ENV PATH="/app/.venv/bin:$PATH"`. Run as a non-root user. `EXPOSE 8000`.
+  - `.dockerignore`: `.env`, `.venv`, `tests`, `__pycache__`, `.pytest_cache`.
+- **`docker-entrypoint.sh`:** `set -e`, then `alembic upgrade head`, then `exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips="*" --workers 1`. Trusting every forwarder is safe only because the container publishes no port.
+- **Frontend image (`frontend/Dockerfile`):**
+  - Build stage `node:22-alpine`: `npm ci`, then `npm run build`.
+  - Final stage `nginx:<stable>-alpine`, with the tag pinned at build time. It holds only `dist/` (to `/usr/share/nginx/html`) and `nginx.conf` (to `/etc/nginx/conf.d/default.conf`).
+  - `.dockerignore`: `node_modules`, `dist`, `coverage`.
+- **`nginx.conf`:** one `server` listening on plain HTTP port 80.
+  - `location /api/`: `proxy_pass http://backend:8000;`, with `Host $host`, `X-Forwarded-For $proxy_add_x_forwarded_for` and `X-Forwarded-Proto $scheme`, plus `proxy_read_timeout 300s`.
+  - `location ~ ^/api/claims/\d+/photos/export$`: the same proxy settings plus `proxy_buffering off;`, so the zip streams.
+  - `location /assets/`: `Cache-Control: public, max-age=31536000, immutable`. Vite gives these files content-hashed names.
+  - `location = /index.html`: `Cache-Control: no-cache`.
+  - `location /`: `try_files $uri /index.html;`, so client routes like `/claims/7` load the app.
+- **`docker-compose.yml`:** existing services are unchanged. These are added, all with `profiles: ["app"]`:
+  - `setup-bucket`: the backend image, with `entrypoint: ["python", "-m", "app.setup_bucket"]`; depends on `minio`.
+  - `backend`: builds `./backend`, with **no `ports`**. Depends on `postgres` (`service_healthy`) and `setup-bucket` (`service_completed_successfully`).
+  - `frontend`: builds `./frontend`, `ports: ["8080:80"]`, depends on `backend`.
+  - Environment for `backend` and `setup-bucket`:
+    - `APP_ENV=development`, because this runs over plain HTTP with dev credentials.
+    - `DATABASE_URL=postgresql+psycopg://warranty:warranty@postgres:5432/warranty` and `SMTP_HOST=mailpit`.
+    - `APP_BASE_URL=http://${LAN_IP:?set LAN_IP in .env}:8080` and `ALLOWED_ORIGINS=["http://${LAN_IP}:8080"]`.
+    - `S3_ENDPOINT_URL=http://${LAN_IP}:9000`.
+  - **Why the LAN IP:** the browser and the backend container must use the same S3 address, because the address is part of a pre-signed URL's signature. `minio:9000` only works inside Docker, and `localhost` means something different inside the container. The laptop's LAN IP works from both, and from the iPhone.
+
+- [ ] **Step 1: Write both Dockerfiles, both `.dockerignore` files, the entrypoint and `nginx.conf` per Interfaces.**
+
+- [ ] **Step 2: Add the `app` profile to `docker-compose.yml`, and `LAN_IP=` (with a comment) to the root `.env.example`.**
+
+- [ ] **Step 3: Build and start it**
+
+Run: stop any dev `uvicorn` and `npm run dev`, set `LAN_IP` in the root `.env`, then `docker compose --profile app up --build -d`
+Expected: `setup-bucket` exits 0, and `backend` and `frontend` are running (`docker compose --profile app ps`).
+
+- [ ] **Step 4: Check nginx's routing and caching**
+
+Run each against `http://<LAN-IP>:8080`:
+- `curl -s .../api/health` → `{"status":"ok"}`.
+- `curl -sI .../claims/7` → `200` with `Content-Type: text/html`.
+- `curl -sI .../index.html` → `Cache-Control: no-cache`.
+- `curl -sI .../assets/<any built file>` → `Cache-Control: public, max-age=31536000, immutable`.
+- `docker compose --profile app port backend 8000` → an error or empty output: the backend has no host port.
+
+- [ ] **Step 5: Check the backend refuses unsafe production settings**
+
+Run: `docker compose --profile app run --rm -e APP_ENV=production backend`
+Expected: exits non-zero before migrating, with an error naming `SESSION_COOKIE_SECURE`, `APP_BASE_URL`, `ALLOWED_ORIGINS`, the S3 keys and `DATABASE_URL`.
+
+- [ ] **Step 6: Short end-to-end run through the containers.** Allow port 8080 through the firewall. Then:
+  1. On the iPhone, open `http://<LAN-IP>:8080`, pick Tech and file a claim with a few photos.
+  2. On the laptop, at the same address, pick Reviewer.
+  3. Open the claim from the Mailpit link: the link uses port 8080.
+  4. Download all photos: the zip arrives complete and named per the convention.
+  5. Run `docker compose --profile app down`, then `up -d` again: the claim and photos are still there, and migrations rerun as a no-op.
+
+- [ ] **Step 7: Update the docs**
+  - **`README.md`:** a "Running the production containers locally" section covering `LAN_IP`, the up/down commands, port 8080, and that only nginx is exposed.
+  - **`CLAUDE.md` Commands:** add `docker compose --profile app up --build` as the production-like run.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add backend/Dockerfile backend/.dockerignore backend/docker-entrypoint.sh frontend/Dockerfile frontend/.dockerignore frontend/nginx.conf docker-compose.yml .env.example README.md CLAUDE.md
+git commit -m "chore: production containers with nginx in front of the backend"
 ```
