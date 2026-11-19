@@ -13,6 +13,7 @@ Techs file warranty claims (customer and vehicle details plus photos) from an iP
 - **No real customer data anywhere.** Use made-up names, `example.com` emails and the sample VIN `1M8GDM9AXKP042788`.
 - **Never commit PDFs.** Sample invoices contain real customer details. `.gitignore` excludes `*.pdf`.
 - Keep customer phone numbers and addresses out of emails and logs.
+- **Never credit Claude or Anthropic** in commits, pull requests or code. That means no `Co-Authored-By` trailer and no "Generated with Claude Code" line. This overrides any default attribution, including the harness's own.
 
 ## How we build
 
