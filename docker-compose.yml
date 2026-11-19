@@ -1,0 +1,43 @@
+# Dev services. `docker compose up -d` starts these; the backend and frontend
+# run on the laptop (see README.md).
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: warranty
+      POSTGRES_PASSWORD: warranty
+      POSTGRES_DB: warranty
+    ports:
+      # Laptop only: the phone never talks to the database.
+      - "127.0.0.1:5432:5432"
+    volumes:
+      # Postgres 18 images keep data in a versioned folder under /var/lib/postgresql.
+      - postgres-data:/var/lib/postgresql
+      - ./docker/postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U warranty"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # S3-compatible photo storage, standing in for DigitalOcean Spaces or Vultr.
+  # Access keys are in docker/seaweedfs/s3.json.
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.54
+    command: server -dir=/data -s3 -s3.config=/etc/seaweedfs/s3.json
+    ports:
+      # The S3 API must be reachable from the phone over Wi-Fi.
+      - "9000:8333"
+    volumes:
+      - seaweedfs-data:/data
+      - ./docker/seaweedfs:/etc/seaweedfs:ro
+
+  mailpit:
+    image: axllent/mailpit
+    ports:
+      - "127.0.0.1:1025:1025"
+      - "127.0.0.1:8025:8025"
+
+volumes:
+  postgres-data:
+  seaweedfs-data:

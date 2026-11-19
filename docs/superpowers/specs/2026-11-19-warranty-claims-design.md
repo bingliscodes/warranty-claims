@@ -55,7 +55,7 @@ The app replaces that:
   - Photos are stored as untouched originals: full resolution, with the photo's original date/time information.
 - **OCR:** Tesseract.js in a browser Web Worker. It only prefills fields.
 - **VIN decoding:** NHTSA's free vPIC service. It only prefills fields.
-- **Local development:** the owner's personal laptop, which has Node and Docker. **[Proposal]** Docker Compose runs Postgres, an S3-compatible store (e.g. MinIO) and a local mail catcher.
+- **Local development:** the owner's personal laptop, which has Node and Docker. **[Proposal]** Docker Compose runs Postgres, an S3-compatible store and a local mail catcher. The store is SeaweedFS (owner's decision, 2026-11-19): MinIO's official Docker images were withdrawn, and SeaweedFS passed a check of pre-signed POST limits, the `uploads/` expiry rule, server-side copy, download filenames and CORS.
 - **Phone access in v1:** the iPhone reaches the laptop over local Wi-Fi. The app, the API and the pre-signed upload/download URLs must use an address the phone can reach, not `localhost`.
 - No real customer data until Entra ID sign-in replaces anonymous sessions.
 
@@ -72,6 +72,7 @@ The app replaces that:
 | Warranty company names | Free text with suggestions / list in a settings file / list reviewers manage | **Free text that suggests names used before.** Revisit after talking with Kim. |
 | Bad photos after submission | Nothing / reviewer excludes from export / reviewer deletes | **Exclude from export**, reversibly. Deleting can come later; the exclude flag already marks the photos involved. |
 | Photo size | Untouched originals / shrink on the phone | **Originals.** See how upload speed holds up. |
+| Runtime versions | Postgres 16 and Python 3.12 / the newest releases (Postgres 18, Python 3.15) / the newest our dependencies fully support | **Postgres 18 and Python 3.14** (owner's decision, 2026-11-19). Postgres 19 isn't released. Python 3.15 is a month old and uvicorn's compiled extras don't ship for it yet. Whether the chosen host offers managed Postgres 18 gets checked in the deployment plan. |
 | Production serving | A: one container, FastAPI serves the built frontend and `/api` / B: nginx container serves the built frontend and reverse-proxies `/api` to a separate backend container / C: frontend and API on separate domains | **B.** The owner has run this setup before. It mirrors the dev setup, where Vite proxies `/api`. C was ruled out because it breaks the same-origin session cookie and Origin check. See §17. |
 | Claim lifecycle | No status / reviewer-set status | **Reviewer-set status.** |
 | Time zone for the export month | One company time zone / tech's time zone | **The tech's time zone** at submission. |
@@ -271,20 +272,20 @@ v1 still runs only on the laptop (§2). This section makes sure the code it prod
 - Development is unchanged: Vite's dev server with its `/api` proxy, plus `uvicorn --reload`.
 
 **[Proposal] Details of the production shape**
-- **Images are built in multiple stages.** The frontend image is Node for the build, then `nginx:alpine` with only the built files and `nginx.conf`. The backend image is `python:3.12-slim` installing from the lockfile.
+- **Images are built in multiple stages.** The frontend image is Node for the build, then `nginx:alpine` with only the built files and `nginx.conf`. The backend image is `python:3.14-slim` installing from the lockfile.
 - **The images don't handle HTTPS.** nginx listens on plain HTTP inside the container. HTTPS is added in front by the deployment plan, either with certbot on the host or with the host's load balancer. The images stay the same either way.
 - **nginx settings:** a longer read timeout on `/api/` for large zip exports, response buffering off for the export so the zip streams, and long-lived caching only on Vite's content-hashed `assets/` files, never on `index.html`.
 - **Proxy headers:** uvicorn runs with `--proxy-headers`, trusting forwarded headers. That's safe because only nginx can reach the backend.
 - **One uvicorn worker.** Reviewer email runs as an in-process background task (§11), which is fine for a single instance at pilot scale.
 - **Migrations run before the server starts,** in the backend container's entrypoint (`alembic upgrade head`, then uvicorn). That's safe with one instance. Running several instances would need a separate migration step.
-- **A Compose profile runs the production setup locally.** `docker compose --profile app up --build` builds and runs both app containers against the local Postgres, MinIO and Mailpit, so the production setup is exercised before any host is involved. The plain `docker compose up -d` still starts only the dev services.
+- **A Compose profile runs the production setup locally.** `docker compose --profile app up --build` builds and runs both app containers against the local Postgres, SeaweedFS and Mailpit, so the production setup is exercised before any host is involved. The plain `docker compose up -d` still starts only the dev services.
 
 **[Proposal] Configuration that is safe in production**
 - **An `APP_ENV` setting,** `development` by default or `production`.
 - **When `APP_ENV=production`, the backend refuses to start** if any of these is true:
   - `SESSION_COOKIE_SECURE` is false;
   - `APP_BASE_URL` or any entry in `ALLOWED_ORIGINS` isn't `https://`;
-  - the S3 keys or the database password are still the development defaults (`minioadmin`, `warranty`).
+  - the S3 keys or the database password are still the development defaults (`dev-access-key` / `dev-secret-key`, `warranty`).
 
   A missing variable fails loudly instead of quietly using dev values.
 - `.env.example` documents every setting and marks the ones production must set.
@@ -294,8 +295,8 @@ v1 still runs only on the laptop (§2). This section makes sure the code it prod
   - creates it if it's missing;
   - applies the 7-day expiry on `uploads/`;
   - applies a CORS rule allowing `ALLOWED_ORIGINS` to POST uploads and GET downloads.
-- It's safe to run repeatedly. Dev uses it in place of the `mc` commands in `minio-init`, and the deployment plan runs it once against DigitalOcean Spaces or Vultr.
-- MinIO doesn't support per-bucket CORS rules (it allows all origins by default). The command logs that and carries on, so it works against both.
+- It's safe to run repeatedly. Dev runs it against SeaweedFS, and the deployment plan runs it once against DigitalOcean Spaces or Vultr.
+- If a store doesn't support per-bucket CORS rules, the command logs that and carries on.
 
 **[Proposal] Reproducible builds**
 - **The backend uses `uv`,** with dependencies in `pyproject.toml` and exact versions locked in a committed `uv.lock`. The Docker image installs from that lock.

@@ -30,7 +30,7 @@ The owner wants to understand every part of the codebase and review all code bef
 
 - **`backend/`:** FastAPI, SQLAlchemy, Alembic, Postgres.
 - **`frontend/`:** React, Vite, TypeScript, shadcn/ui, with light and dark themes.
-- **Photos:** S3-compatible storage (MinIO locally).
+- **Photos:** S3-compatible storage (SeaweedFS locally).
 - **Email:** Mailpit locally.
 - **Dev services:** `docker compose up -d`.
 
@@ -38,6 +38,6 @@ The owner wants to understand every part of the codebase and review all code bef
 
 These work once the plan's Tasks 1 and 11 have landed:
 
-- Backend tests: `cd backend && uv run pytest` (`uv` manages Python 3.12; the laptop's default `python3` is 3.9)
+- Backend tests: `cd backend && uv run pytest` (`uv` manages Python 3.14; the laptop's default `python3` is 3.9)
 - Frontend tests: `cd frontend && npm test`
 - Run locally: `uv run uvicorn app.main:app --reload --port 8000` in `backend/`, and `npm run dev` in `frontend/`. Testing from the iPhone is covered in `README.md`.

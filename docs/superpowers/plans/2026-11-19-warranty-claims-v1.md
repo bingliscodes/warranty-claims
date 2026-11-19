@@ -14,9 +14,9 @@
 - **Production shape (prepared, not deployed):** an nginx container serves the built frontend and reverse-proxies `/api/` to a separate backend container, which is never published on a host port. Task 17 builds both images and runs them locally under a Compose profile.
 
 **Tech Stack:**
-- **Backend:** Python 3.12+ managed by `uv` (committed `uv.lock`), FastAPI, Uvicorn, SQLAlchemy 2, Pydantic 2, pydantic-settings, Alembic, psycopg 3, boto3, httpx, pytest, moto.
+- **Backend:** Python 3.14 managed by `uv` (committed `uv.lock`), FastAPI, Uvicorn, SQLAlchemy 2, Pydantic 2, pydantic-settings, Alembic, psycopg 3, boto3, httpx, pytest, moto.
 - **Frontend:** Node 22+, React, Vite, TypeScript, Tailwind CSS, shadcn/ui, React Router, TanStack Query, Tesseract.js, Vitest, React Testing Library.
-- **Docker Compose:** Postgres 16, MinIO, Mailpit. The `app` profile adds the production `frontend` (nginx) and `backend` containers.
+- **Docker Compose:** Postgres 18, SeaweedFS (S3-compatible), Mailpit. The `app` profile adds the production `frontend` (nginx) and `backend` containers.
 
 **Spec:** `docs/superpowers/specs/2026-11-19-warranty-claims-design.md`, approved 2026-11-19. It builds on `warranty_wireframe_v2.excalidraw`.
 
@@ -25,9 +25,9 @@
 ## Global Constraints
 
 **Platforms and versions**
-- Python ≥ 3.12, Node ≥ 22, Postgres 16 via Docker Compose.
+- Python 3.14, Node ≥ 22, Postgres 18 via Docker Compose (design §4, runtime versions).
 - The backend depends on `tzdata`, because Windows has no system time-zone database.
-- Backend dependencies are managed with `uv`: ranges in `pyproject.toml`, exact versions in a committed `uv.lock`, Python pinned to `3.12` in `backend/.python-version`. Backend commands run through `uv run`. The laptop's default `python3` is 3.9, so never use a bare `python -m venv`.
+- Backend dependencies are managed with `uv`: ranges in `pyproject.toml`, exact versions in a committed `uv.lock`, Python pinned to `3.14` in `backend/.python-version`. Backend commands run through `uv run`. The laptop's default `python3` is 3.9, so never use a bare `python -m venv`.
 - The frontend's `package-lock.json` is committed. Images install with `uv sync --frozen` and `npm ci`.
 
 **Deployment readiness (design §17)**
@@ -57,7 +57,7 @@
   - Uploads land at `uploads/{user_id}/{uuid}.{ext}`.
   - On attach they move to `claims/{claim_id}/{uuid}.{ext}`.
   - The bucket expires `uploads/` after 7 days.
-- The S3 client uses signature v4 and path-style addressing, needed for MinIO on an IP address.
+- The S3 client uses signature v4 and path-style addressing, needed for a local S3 store on an IP address.
 
 **Phone access over Wi-Fi**
 - Every address the phone uses comes from config, never a `localhost` literal: `APP_BASE_URL`, `S3_ENDPOINT_URL`, `ALLOWED_ORIGINS`.
@@ -190,13 +190,13 @@ frontend/
   - `DATABASE_URL="postgresql+psycopg://warranty:warranty@localhost:5432/warranty"`
   - `SESSION_COOKIE_SECURE=False`, `SESSION_TTL_DAYS=365`
   - `ALLOWED_ORIGINS: list[str]=["http://localhost:5173"]`, `APP_BASE_URL="http://localhost:5173"`
-  - `S3_ENDPOINT_URL: str | None="http://localhost:9000"`, `S3_REGION="us-east-1"`, `S3_BUCKET="warranty-photos"`, `S3_ACCESS_KEY_ID="minioadmin"`, `S3_SECRET_ACCESS_KEY="minioadmin"`, `MAX_UPLOAD_BYTES=30_000_000`
+  - `S3_ENDPOINT_URL: str | None="http://localhost:9000"`, `S3_REGION="us-east-1"`, `S3_BUCKET="warranty-photos"`, `S3_ACCESS_KEY_ID="dev-access-key"`, `S3_SECRET_ACCESS_KEY="dev-secret-key"`, `MAX_UPLOAD_BYTES=30_000_000`
   - `SMTP_HOST="localhost"`, `SMTP_PORT=1025`, `SMTP_USERNAME: str | None=None`, `SMTP_PASSWORD: str | None=None`, `SMTP_STARTTLS=False`, `MAIL_FROM="warranty-app@localhost"`
   - `VPIC_BASE_URL="https://vpic.nhtsa.dot.gov/api"`
 - **Production checks:** a `model_validator(mode="after")` on `Settings`. When `APP_ENV == "production"`, it collects every problem below and raises one `ValueError` naming each offending setting:
   - `SESSION_COOKIE_SECURE` is false.
   - `APP_BASE_URL` doesn't start with `https://`, or any `ALLOWED_ORIGINS` entry doesn't.
-  - `S3_ACCESS_KEY_ID` or `S3_SECRET_ACCESS_KEY` is `minioadmin`.
+  - `S3_ACCESS_KEY_ID` is `dev-access-key` or `S3_SECRET_ACCESS_KEY` is `dev-secret-key`.
   - The `DATABASE_URL` password (read with `sqlalchemy.engine.make_url`) is `warranty`.
 
   In development it checks nothing.
@@ -221,18 +221,18 @@ frontend/
 - [ ] **Step 1: Add dev services and repo files**
   - **`.gitignore`** (already exists; confirm it lists): `.env`, `*.pdf`, `.venv/`, `__pycache__/`, `.pytest_cache/`, `node_modules/`, `dist/`, `coverage/`.
   - **`docker-compose.yml`:**
-    - `postgres`: image `postgres:16`; `POSTGRES_USER`, `POSTGRES_PASSWORD` and `POSTGRES_DB` all `warranty`; port 5432; a named volume; mounts `./docker/postgres-init` at `/docker-entrypoint-initdb.d`. `01-test-db.sql` contains `CREATE DATABASE warranty_test;`. A healthcheck runs `pg_isready -U warranty`, which Task 17's backend waits on.
-    - `minio`: image `minio/minio`, command `server /data --console-address :9001`, ports 9000 and 9001, root user and password `minioadmin`.
+    - `postgres`: image `postgres:18`; `POSTGRES_USER`, `POSTGRES_PASSWORD` and `POSTGRES_DB` all `warranty`; port 5432; a named volume mounted at `/var/lib/postgresql` (the Postgres 18 image's data location); mounts `./docker/postgres-init` at `/docker-entrypoint-initdb.d`. `01-test-db.sql` contains `CREATE DATABASE warranty_test;`. A healthcheck runs `pg_isready -U warranty`, which Task 17's backend waits on.
+    - `seaweedfs`: image `chrislusf/seaweedfs:4.54`, command `server -dir=/data -s3 -s3.config=/etc/seaweedfs/s3.json`, host port 9000 → container 8333, a named volume, and `./docker/seaweedfs` mounted read-only. `docker/seaweedfs/s3.json` holds one identity with keys `dev-access-key` / `dev-secret-key`. (MinIO's official images were withdrawn; see design §3.)
     - `mailpit`: image `axllent/mailpit`, ports 1025 (SMTP) and 8025 (web).
     - No bucket-setup service: Task 4's `python -m app.setup_bucket` creates the bucket.
   - **`.env.example`:** every `Settings` field with its default. A comment marks the ones production must change: `APP_ENV`, `SESSION_COOKIE_SECURE`, `APP_BASE_URL`, `ALLOWED_ORIGINS`, `DATABASE_URL`, the S3 settings, the SMTP settings and `MAIL_FROM`.
 
 - [ ] **Step 2: Write `backend/pyproject.toml` and set up the environment with `uv`**
-  - `requires-python = ">=3.12"`, and `backend/.python-version` containing `3.12`.
+  - `requires-python = ">=3.14"`, and `backend/.python-version` containing `3.14`.
   - Dependencies: `fastapi>=0.115`, `uvicorn[standard]>=0.32`, `sqlalchemy>=2.0.36`, `psycopg[binary]>=3.2`, `alembic>=1.14`, `pydantic>=2.9`, `pydantic-settings>=2.6`, `email-validator>=2.2`, `boto3>=1.35`, `httpx>=0.27`, `tzdata>=2024.2`.
   - A `[dependency-groups]` `dev` group: `pytest>=8.3`, `moto[s3]>=5.0`.
   - Add `[tool.pytest.ini_options] testpaths = ["tests"]`.
-  - Run: `docker compose up -d`, then in `backend/`: `uv sync`. It creates `.venv` on Python 3.12, installs both groups and writes `uv.lock`.
+  - Run: `docker compose up -d`, then in `backend/`: `uv sync`. It creates `.venv` on Python 3.14, installs both groups and writes `uv.lock`.
 
 - [ ] **Step 3: Write the failing test**
 
@@ -281,7 +281,7 @@ def test_production_rejects_dev_defaults_and_names_each_problem():
 @pytest.mark.parametrize("override", [
     {"SESSION_COOKIE_SECURE": False},
     {"ALLOWED_ORIGINS": ["https://claims.example.com", "http://192.168.1.50:5173"]},
-    {"S3_SECRET_ACCESS_KEY": "minioadmin"},
+    {"S3_SECRET_ACCESS_KEY": "dev-secret-key"},
     {"DATABASE_URL": "postgresql+psycopg://warranty:warranty@db.example.com:5432/warranty"},
 ])
 def test_production_rejects_each_unsafe_setting(override):
@@ -304,10 +304,10 @@ Expected: all pass.
 - [ ] **Step 7: Write `README.md`**
   - **Dev setup:**
     - `docker compose up -d`.
-    - In `backend/`: `uv sync` (installs `uv`-managed Python 3.12 if needed), then `uv run uvicorn app.main:app --reload --port 8000`.
+    - In `backend/`: `uv sync` (installs `uv`-managed Python 3.14 if needed), then `uv run uvicorn app.main:app --reload --port 8000`.
     - Tests: `uv run pytest`.
     - `npm run dev` (from Task 11).
-    - Mailpit is at `http://localhost:8025`, the MinIO console at `http://localhost:9001`.
+    - Mailpit is at `http://localhost:8025`. SeaweedFS serves S3 at `http://localhost:9000`.
   - **"Testing on your iPhone" section:**
     - Find the laptop's LAN IP.
     - In `backend/.env`, set `APP_BASE_URL=http://<LAN-IP>:5173`, `ALLOWED_ORIGINS=["http://<LAN-IP>:5173","http://localhost:5173"]` and `S3_ENDPOINT_URL=http://<LAN-IP>:9000`.
@@ -577,7 +577,7 @@ git commit -m "feat: anonymous sessions with role picker and current-user checks
   - **`ensure_bucket(storage: PhotoStorage, region: str, allowed_origins: list[str]) -> None`.** Safe to run repeatedly:
     - If `head_bucket` raises a 404 `ClientError`, creates the bucket. It passes `CreateBucketConfiguration={"LocationConstraint": region}` unless `region == "us-east-1"`.
     - Puts the lifecycle configuration: one rule, `ID="expire-uploads"`, `Filter={"Prefix": "uploads/"}`, `Status="Enabled"`, `Expiration={"Days": 7}`.
-    - Puts the CORS configuration: one rule with `AllowedOrigins=allowed_origins`, `AllowedMethods=["GET", "POST"]`, `AllowedHeaders=["*"]`, `ExposeHeaders=["ETag"]` and `MaxAgeSeconds=3000`. If that raises a `ClientError` with code `NotImplemented` (MinIO), it logs a warning that the store allows all origins by default, and returns normally.
+    - Puts the CORS configuration: one rule with `AllowedOrigins=allowed_origins`, `AllowedMethods=["GET", "POST"]`, `AllowedHeaders=["*"]`, `ExposeHeaders=["ETag"]` and `MaxAgeSeconds=3000`. If that raises a `ClientError` with code `NotImplemented` (a store without per-bucket CORS), it logs a warning and returns normally.
   - **`main() -> None`**, run by `python -m app.setup_bucket`: builds `Settings()` and calls `ensure_bucket(build_storage(settings), settings.S3_REGION, settings.ALLOWED_ORIGINS)`.
 - **Produces in `app/uploads.py`:** `POST /api/uploads`, any signed-in user.
   - Body: `UploadRequest{content_type: Literal["image/jpeg", "image/png"], filename: str 1–255}`.
@@ -679,9 +679,9 @@ Expected: errors importing `app.storage` and `app.setup_bucket`.
 Run: `uv run pytest -v`
 Expected: all pass.
 
-- [ ] **Step 5: Set up the dev bucket against MinIO**
+- [ ] **Step 5: Set up the dev bucket against SeaweedFS**
   - Run: `uv run python -m app.setup_bucket`, twice.
-  - Expected: both runs exit 0. The CORS step either succeeds or logs the MinIO warning. The MinIO console (`http://localhost:9001`) shows bucket `warranty-photos` with the `uploads/` expiry rule.
+  - Expected: both runs exit 0 without CORS warnings, and `uv run python -c "from app.config import Settings; from app.storage import build_storage; s = build_storage(Settings()); print(s.client.get_bucket_lifecycle_configuration(Bucket=s.bucket)['Rules'])"` prints the `uploads/` 7-day rule.
   - Add the command to the README's dev setup, after `uv sync`: "run once, and again whenever `ALLOWED_ORIGINS` changes."
 
 - [ ] **Step 6: Commit**
@@ -2424,7 +2424,7 @@ Carries out design §17's production shape: an nginx `frontend` container and a 
 **Interfaces:**
 - **Consumes:** `Settings` and the production checks (Task 1), the migrations (Task 2), `python -m app.setup_bucket` (Task 4), `GET /api/health` (Task 1), the export route `GET /api/claims/{id}/photos/export` (Task 7), and `npm run build` (Task 11).
 - **Backend image (`backend/Dockerfile`):**
-  - Base `python:3.12-slim`. Copy the `uv` binary from `ghcr.io/astral-sh/uv:<version>`, pinned to the laptop's `uv --version`.
+  - Base `python:3.14-slim`. Copy the `uv` binary from `ghcr.io/astral-sh/uv:<version>`, pinned to the laptop's `uv --version`.
   - Workdir `/app`. Install with `uv sync --frozen --no-dev` (copy `pyproject.toml` and `uv.lock` first so dependency layers cache), then copy `app/`, `alembic/`, `alembic.ini` and `docker-entrypoint.sh`.
   - `ENV PATH="/app/.venv/bin:$PATH"`. Run as a non-root user. `EXPOSE 8000`.
   - `.dockerignore`: `.env`, `.venv`, `tests`, `__pycache__`, `.pytest_cache`.
@@ -2440,7 +2440,7 @@ Carries out design §17's production shape: an nginx `frontend` container and a 
   - `location = /index.html`: `Cache-Control: no-cache`.
   - `location /`: `try_files $uri /index.html;`, so client routes like `/claims/7` load the app.
 - **`docker-compose.yml`:** existing services are unchanged. These are added, all with `profiles: ["app"]`:
-  - `setup-bucket`: the backend image, with `entrypoint: ["python", "-m", "app.setup_bucket"]`; depends on `minio`.
+  - `setup-bucket`: the backend image, with `entrypoint: ["python", "-m", "app.setup_bucket"]`; depends on `seaweedfs`.
   - `backend`: builds `./backend`, with **no `ports`**. Depends on `postgres` (`service_healthy`) and `setup-bucket` (`service_completed_successfully`).
   - `frontend`: builds `./frontend`, `ports: ["8080:80"]`, depends on `backend`.
   - Environment for `backend` and `setup-bucket`:
@@ -2448,7 +2448,7 @@ Carries out design §17's production shape: an nginx `frontend` container and a 
     - `DATABASE_URL=postgresql+psycopg://warranty:warranty@postgres:5432/warranty` and `SMTP_HOST=mailpit`.
     - `APP_BASE_URL=http://${LAN_IP:?set LAN_IP in .env}:8080` and `ALLOWED_ORIGINS=["http://${LAN_IP}:8080"]`.
     - `S3_ENDPOINT_URL=http://${LAN_IP}:9000`.
-  - **Why the LAN IP:** the browser and the backend container must use the same S3 address, because the address is part of a pre-signed URL's signature. `minio:9000` only works inside Docker, and `localhost` means something different inside the container. The laptop's LAN IP works from both, and from the iPhone.
+  - **Why the LAN IP:** the browser and the backend container must use the same S3 address, because the address is part of a pre-signed URL's signature. `seaweedfs:8333` only works inside Docker, and `localhost` means something different inside the container. The laptop's LAN IP works from both, and from the iPhone.
 
 - [ ] **Step 1: Write both Dockerfiles, both `.dockerignore` files, the entrypoint and `nginx.conf` per Interfaces.**
 
