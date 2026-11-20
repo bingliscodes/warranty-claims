@@ -45,16 +45,14 @@ def test_me_requires_a_known_session(client):
     assert client.get("/api/me").status_code == 401
 
 
-def test_expired_session_rejected(db, tech, client_for):
-    c = client_for(tech)
+def test_expired_session_rejected(db, tech_client):
     db.query(AuthSession).update({"expires_at": utcnow() - timedelta(minutes=1)})
-    assert c.get("/api/me").status_code == 401
+    assert tech_client.get("/api/me").status_code == 401
 
 
-def test_session_renewed_after_a_day(db, tech, client_for):
-    c = client_for(tech)
+def test_session_renewed_after_a_day(db, tech_client):
     db.query(AuthSession).update({"expires_at": utcnow() + timedelta(days=300)})
-    assert "warranty_session=" in c.get("/api/me").headers.get("set-cookie", "")
+    assert "warranty_session=" in tech_client.get("/api/me").headers.get("set-cookie", "")
     assert db.query(AuthSession).one().expires_at > utcnow() + timedelta(days=364)
 
 
