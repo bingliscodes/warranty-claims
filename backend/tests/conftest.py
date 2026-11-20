@@ -8,9 +8,11 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
+from app.auth import COOKIE_NAME, start_session
 from app.config import Settings
 from app.db import get_db
 from app.main import create_app
+from app.models import Role, User
 
 
 @pytest.fixture(scope="session")
@@ -106,3 +108,48 @@ def app(settings, db):
 @pytest.fixture
 def client(app) -> TestClient:
     return TestClient(app)
+
+
+@pytest.fixture
+def make_user(db):
+    """Call it to add a user: make_user(role=Role.reviewer, name="Kim")."""
+
+    def _make_user(role: Role = Role.tech, name: str = "Tess Tech", email: str | None = None):
+        user = User(name=name, role=role, email=email)
+        db.add(user)
+        db.flush()
+        return user
+
+    return _make_user
+
+
+@pytest.fixture
+def client_for(app, db, settings):
+    """Call it with a user to get a TestClient already signed in as them."""
+
+    def _client_for(user: User) -> TestClient:
+        client = TestClient(app)
+        client.cookies.set(COOKIE_NAME, start_session(db, user, settings))
+        return client
+
+    return _client_for
+
+
+@pytest.fixture
+def tech(make_user) -> User:
+    return make_user()
+
+
+@pytest.fixture
+def reviewer(make_user) -> User:
+    return make_user(role=Role.reviewer, name="Kim Reviewer", email="kim@example.com")
+
+
+@pytest.fixture
+def tech_client(client_for, tech) -> TestClient:
+    return client_for(tech)
+
+
+@pytest.fixture
+def reviewer_client(client_for, reviewer) -> TestClient:
+    return client_for(reviewer)

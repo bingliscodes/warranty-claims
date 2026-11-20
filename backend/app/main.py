@@ -1,18 +1,16 @@
 import logging
 
-from fastapi import Depends, FastAPI, Request, Response
+from fastapi import Depends, FastAPI, Response
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from app.auth import OriginCheckMiddleware
+from app.auth import router as auth_router
 from app.config import Settings
 from app.db import get_db, make_session_factory
 
 logger = logging.getLogger(__name__)
-
-
-def get_settings(request: Request) -> Settings:
-    return request.app.state.settings
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -20,6 +18,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="Warranty Claims")
     app.state.settings = settings
     app.state.session_factory = make_session_factory(settings.DATABASE_URL)
+    app.add_middleware(OriginCheckMiddleware, allowed_origins=settings.ALLOWED_ORIGINS)
+    app.include_router(auth_router)
 
     @app.get("/api/health")
     def health(response: Response, db: Session = Depends(get_db)) -> dict[str, str]:

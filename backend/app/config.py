@@ -1,5 +1,6 @@
 from typing import Literal
 
+from fastapi import Request
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
@@ -60,3 +61,8 @@ class Settings(BaseSettings):
         if problems:
             raise ValueError("Unsafe settings for APP_ENV=production: " + "; ".join(problems))
         return self
+
+
+def get_settings(request: Request) -> Settings:
+    """FastAPI dependency: the Settings that create_app() was given."""
+    return request.app.state.settings
