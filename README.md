@@ -25,8 +25,11 @@ You need Docker and [`uv`](https://docs.astral.sh/uv/). `uv` installs Python 3.1
 
    ```sh
    uv sync                                          # creates .venv with Python 3.14 and all dependencies
+   uv run python -m app.setup_bucket                # creates the photo bucket, its upload expiry and CORS
    uv run uvicorn app.main:app --reload --port 8000
    ```
+
+   Run `app.setup_bucket` once, and again whenever `ALLOWED_ORIGINS` changes. It's safe to run repeatedly.
 
    The defaults in `app/config.py` work for local development. To change a setting, copy `.env.example` to `backend/.env` and edit it.
 

@@ -9,6 +9,8 @@ from app.auth import OriginCheckMiddleware
 from app.auth import router as auth_router
 from app.config import Settings
 from app.db import get_db, make_session_factory
+from app.storage import build_storage
+from app.uploads import router as upload_router
 
 logger = logging.getLogger(__name__)
 
@@ -18,8 +20,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="Warranty Claims")
     app.state.settings = settings
     app.state.session_factory = make_session_factory(settings.DATABASE_URL)
+    app.state.storage = build_storage(settings)
     app.add_middleware(OriginCheckMiddleware, allowed_origins=settings.ALLOWED_ORIGINS)
     app.include_router(auth_router)
+    app.include_router(upload_router)
 
     @app.get("/api/health")
     def health(response: Response, db: Session = Depends(get_db)) -> dict[str, str]:

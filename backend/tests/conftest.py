@@ -1,18 +1,21 @@
 import os
 from pathlib import Path
 
+import boto3
 import pytest
+from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
+from moto import mock_aws
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
-from alembic import command
 from app.auth import COOKIE_NAME, start_session
 from app.config import Settings
 from app.db import get_db
 from app.main import create_app
 from app.models import Role, User
+from app.storage import PhotoStorage, get_storage
 
 
 @pytest.fixture(scope="session")
@@ -153,3 +156,13 @@ def tech_client(client_for, tech) -> TestClient:
 @pytest.fixture
 def reviewer_client(client_for, reviewer) -> TestClient:
     return client_for(reviewer)
+
+
+@pytest.fixture
+def storage(app):
+    with mock_aws():
+        client = boto3.client("s3", region_name="us-east-1")
+        client.create_bucket(Bucket="test-bucket")
+        photo_storage = PhotoStorage(client=client, bucket="test-bucket")
+        app.dependency_overrides[get_storage] = lambda: photo_storage
+        yield photo_storage
