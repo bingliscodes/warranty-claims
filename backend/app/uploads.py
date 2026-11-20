@@ -1,5 +1,5 @@
 import uuid
-from typing import Annotated, Literal
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel, StringConstraints
@@ -7,13 +7,12 @@ from pydantic import BaseModel, StringConstraints
 from app.auth import get_current_user
 from app.config import Settings, get_settings
 from app.models import User
+from app.photos.content_types import EXTENSIONS, ContentType
 from app.storage import PhotoStorage, get_storage
-
-EXTENSIONS = {"image/jpeg": "jpg", "image/png": "png"}
 
 
 class UploadRequest(BaseModel):
-    content_type: Literal["image/jpeg", "image/png"]
+    content_type: ContentType
     filename: Annotated[str, StringConstraints(min_length=1, max_length=255)]
 
 

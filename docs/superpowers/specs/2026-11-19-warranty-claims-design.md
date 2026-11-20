@@ -201,7 +201,9 @@ The screens follow the wireframe's Review layout.
 - **Cleanup:**
   - Warranty company and last name are uppercased, with spaces, accents and apostrophes removed: "de la Cruz" → `DELACRUZ`, "Muñoz" → `MUNOZ`, "O'Brien" → `OBRIEN`.
   - Spaces in descriptions become dots: "Wheel RF" → `Wheel.RF`.
-  - Repeated descriptions get `-2`, `-3`.
+  - Repeated descriptions get `-2`, `-3`. Descriptions are compared case-insensitively.
+  - A suffix never reuses a name that's already taken: the count keeps going up until the name is unused (owner's decision, 2026-11-20). Typed descriptions `Wheel.RF`, `Wheel.RF` and `Wheel.RF-2` export as `Wheel.RF`, `Wheel.RF-2` and `Wheel.RF-2-2`. Two files in one zip never share a name.
+  - A damage description that cleans up to nothing, such as `///` or `李`, exports as `Damage` (owner's decision, 2026-11-20). Every filename stays well-formed, even though descriptions are only checked for being non-blank.
 - **[Proposal]** VIN and mileage photos use `VIN` and `Mileage` as their description.
 - **[Proposal]** Reviewers can change a damage photo's description but can't blank it, so every filename has one.
 - The date part, and possibly the whole pattern, may change. Whether each warranty company has its own pattern is pending the owner's follow-up with Kim.
