@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     VPIC_BASE_URL: str = "https://vpic.nhtsa.dot.gov/api"
 
     @model_validator(mode="after")
-    def _refuse_unsafe_production_settings(self) -> "Settings":
+    def _refuse_unsafe_production_settings(self) -> Settings:
         if self.APP_ENV != "production":
             return self
 

@@ -39,5 +39,6 @@ The owner wants to understand every part of the codebase and review all code bef
 These work once the plan's Tasks 1 and 11 have landed:
 
 - Backend tests: `cd backend && uv run pytest` (`uv` manages Python 3.14; the laptop's default `python3` is 3.9)
+- Backend format and lint: `cd backend && uv run ruff format . && uv run ruff check --fix .` (line length 100)
 - Frontend tests: `cd frontend && npm test`
 - Run locally: `uv run uvicorn app.main:app --reload --port 8000` in `backend/`, and `npm run dev` in `frontend/`. Testing from the iPhone is covered in `README.md`.

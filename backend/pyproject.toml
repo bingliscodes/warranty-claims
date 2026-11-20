@@ -20,9 +20,24 @@ dependencies = [
 dev = [
     "pytest>=8.3",
     "moto[s3]>=5.0",
+    "ruff>=0.17.6",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # The backend isn't installed as a package; tests import `app` from here.
 pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's Depends() in a default argument is the intended pattern, not a bug.
+extend-immutable-calls = ["fastapi.Depends"]
+
+[tool.ruff.lint.flake8-comprehensions]
+allow-dict-calls-with-keyword-arguments = true
+
+[tool.ruff.lint.isort]
+# The backend/alembic/ folder would otherwise make Ruff treat the alembic package as our code.
+known-third-party = ["alembic"]

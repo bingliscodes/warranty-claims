@@ -2,12 +2,12 @@ import os
 from pathlib import Path
 
 import pytest
-from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
+from alembic import command
 from app.auth import COOKIE_NAME, start_session
 from app.config import Settings
 from app.db import get_db

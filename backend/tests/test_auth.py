@@ -15,7 +15,9 @@ def test_role_picker_creates_user_and_session(client):
 
 
 def test_session_cookie_flags(client):
-    cookie = client.post("/api/session", json={"name": "Tess", "role": "tech"}).headers["set-cookie"]
+    cookie = client.post("/api/session", json={"name": "Tess", "role": "tech"}).headers[
+        "set-cookie"
+    ]
     assert "warranty_session=" in cookie and "HttpOnly" in cookie
     assert "Max-Age=31536000" in cookie and "samesite=lax" in cookie.lower()
 

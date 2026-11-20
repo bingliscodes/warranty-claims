@@ -93,10 +93,8 @@ class Claim(Base):
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
 
-    photos: Mapped[list["Photo"]] = relationship(
-        back_populates="claim", order_by="Photo.id"
-    )
-    messages: Mapped[list["ChatMessage"]] = relationship(
+    photos: Mapped[list[Photo]] = relationship(back_populates="claim", order_by="Photo.id")
+    messages: Mapped[list[ChatMessage]] = relationship(
         back_populates="claim", order_by="ChatMessage.id"
     )
 
