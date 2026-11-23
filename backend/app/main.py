@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.auth import OriginCheckMiddleware
 from app.auth import router as auth_router
+from app.claims.routes import router as claims_router
 from app.config import Settings
 from app.db import get_db, make_session_factory
 from app.storage import build_storage
@@ -24,6 +25,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(OriginCheckMiddleware, allowed_origins=settings.ALLOWED_ORIGINS)
     app.include_router(auth_router)
     app.include_router(upload_router)
+    app.include_router(claims_router)
 
     @app.get("/api/health")
     def health(response: Response, db: Session = Depends(get_db)) -> dict[str, str]:

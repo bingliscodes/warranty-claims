@@ -69,7 +69,7 @@ The app replaces that:
 | Chat delivery | Polling / server-sent events / WebSockets | **Polling** while a claim page is open. Chat doesn't need to be real-time. |
 | Frontend | React / Jinja + HTMX / Vue | **React + Vite + TypeScript.** It suits the photo-heavy intake, the OCR worker, direct uploads and draft recovery. |
 | Reviewer notification | Email / SMS / in-app only | **Email.** |
-| Warranty company names | Free text with suggestions / list in a settings file / list reviewers manage | **Free text that suggests names used before.** Revisit after talking with Kim. |
+| Warranty company names | Free text with suggestions / list in a settings file / list reviewers manage | **Free text that suggests names used before** (confirmed by the owner, 2026-11-23). The phone gets every name used so far from `GET /api/options` and filters it as the tech types, so typing sends no requests. |
 | Damage photo descriptions | Free text / a fixed list plus an "Other" free-text choice / a fixed list. Where the list lives: a Python enum stored as an enum column / a list in code that the API checks, with a plain text column / a database table | **A fixed list in code, checked by the API; the column stays plain text** (owner's decision, 2026-11-23; wireframe v3). An enum column would refuse to load old claims once a label is retired, and a table is more than a placeholder list needs. "Other" was dropped: it would let any text through, so the API couldn't enforce the list, and a fixed list lets the naming code assume clean labels. |
 | Bad photos after submission | Nothing / reviewer excludes from export / reviewer deletes | **Exclude from export**, reversibly. Deleting can come later; the exclude flag already marks the photos involved. |
 | Photo size | Untouched originals / shrink on the phone | **Originals.** See how upload speed holds up. |
@@ -111,6 +111,7 @@ The app replaces that:
 
 **Required to submit**
 - **Customer:** first name, last name, phone (10-digit US), address, city, state (searchable dropdown), ZIP (5 digits).
+  - **A phone number with the country code is accepted** (owner's decision, 2026-11-23). An 11-digit number that starts with 1, such as iPhone autofill's "+1 (608) 555-0134", loses the 1 and is stored as 10 digits. US area codes never start with 1, so a leading 1 there is always the country code. Any other 11-digit number is still rejected.
 - **Vehicle:** year (4 digits), make, model.
 - **VIN [Proposal]:** the VIN value is required, following from "VIN photo required"; the VIN appears in every export filename and in the reviewer email. Rule: 17 characters, letters and digits except I, O and Q.
 - **Warranty company:** free text, suggesting names already used on earlier claims.
@@ -143,6 +144,7 @@ This follows the wireframe's two intake phases.
 2. **Photos:**
    - Damage photos, each with a required description picked from a searchable dropdown of damage labels (wireframe v3; owner's decision, 2026-11-23).
      - The API rejects any description that isn't on the list. There is no "Other" choice.
+     - The list lives in the backend code, and the phone gets it from `GET /api/options`.
      - **Placeholder list** until the real one arrives: `Wheel RF`, `Wheel LF`, `Wheel LR`, `Wheel RR`.
    - The optional mileage photo with the mileage field.
 
@@ -161,6 +163,11 @@ This follows the wireframe's two intake phases.
   - If the lookup fails, the fields stay blank for the tech to fill.
   - **[Proposal]** The lookup goes through the backend with a short timeout. It fills only fields that are still empty, so it never overwrites what the tech typed.
 - **Submit:** one small request that references the uploaded photos, after which reviewers are emailed.
+  - **Copy now, delete later** (owner's decision, 2026-11-20). Submit copies each photo from `uploads/` to `claims/{id}/`, and deletes the `uploads/` originals only after the claim is saved. If submit fails partway, the originals are still there, so the tech's retry works without picking photos again. If the delete fails, submit still succeeds, because `uploads/` expires after 7 days anyway. The worst leftover is an unused copy under `claims/`. Adding photos to a submitted claim works the same way.
+  - **The same photo key twice in one submit gets 422** with "Duplicate photo key" (owner's decision, 2026-11-20). Otherwise it would hit the database's unique storage key and come back as an unexplained 500. A clear 422 is easier to debug and audit.
+  - **A photo key must have the exact shape the upload route hands out**, `uploads/{the tech's user id}/{32 hex characters}.{jpg or png}`. Anything else gets 422 "Photo upload not found" before storage is asked about it (owner's decision, 2026-11-23).
+    - Why: checking only that the key starts with the tech's own folder let `uploads/{id}/../{other id}/…` through to storage. Nothing leaked, but SeaweedFS answers 400 to such a key, and that came back as a 500.
+    - Rejected: treating every storage error as "not found". It would report a storage outage as a missing photo.
 
 ## 9. Review (laptop)
 
@@ -168,6 +175,9 @@ The screens follow the wireframe's Review layout.
 
 - **Claims list:**
   - Search matches customer name, VIN and claim number.
+    - **Case-insensitive substring match with `ILIKE '%…%'`** (owner's decision, 2026-11-23), so partial VINs ("042788") and partial names ("smi") match.
+    - Postgres full-text search was considered and rejected. It matches whole words only, so it misses partial VINs and names. Its English word-rooting also mangles surnames (Hayes becomes "hay").
+    - Without an index, the search scans every row: about 200 ms for 100,000 claims. If that gets slow, a `pg_trgm` trigram index speeds up the same `ILIKE` queries with no code change.
   - A status filter.
   - Pagination, and an unread marker per claim.
 - **Claim detail:**
@@ -229,6 +239,7 @@ The screens follow the wireframe's Review layout.
 - **Chat message:** claim, sender, contents, time.
 - **Claim read state:** user, claim, last-read time.
 - **Warranty company suggestions:** the distinct names already used on claims. No separate table.
+  - **Most used first** (owner's decision, 2026-11-23), so the companies on most claims are one tap away before the tech types. Ties go alphabetically, ignoring case. Alphabetical and most-recent-first were considered. Alphabetical can bury the most-used company at the bottom. Most-recent-first reorders after almost every claim.
 - **Damage labels:** a fixed list in the backend code, not a table. A photo's description column stays plain text, so a retired label still loads and exports.
 
 ## 14. API changes from the wireframe [Proposal]
@@ -249,7 +260,7 @@ The screens follow the wireframe's Review layout.
   - Read a claim's chat thread (`GET /claims/{id}/conversations`).
   - Mark a claim read.
   - Look up year, make and model for a VIN.
-  - List warranty company suggestions.
+  - Get the intake form's options, `GET /options` (owner's decision, 2026-11-23): the damage labels, and every warranty company name used so far. The phone filters the names as the tech types.
 
 ## 15. Deferred and next
 
@@ -257,7 +268,6 @@ The screens follow the wireframe's Review layout.
 - **Entra ID sign-in.** It must land before any real data. Session length gets decided with IT at that point.
 - **Pending Kim:**
   - Whether warranty companies need their own filename patterns.
-  - Whether company names should come from a managed list.
 - **The real list of damage labels** replaces the placeholder in §8.
 - **Reviewer photo deletion.** Straightforward to add later: excluded photos are already flagged. Delete adds removing the stored file and deciding who may do it.
 - Monitoring, invoices, email to techs on replies, shrinking photos before upload.
@@ -316,6 +326,14 @@ v1 still runs only on the laptop (§2). This section makes sure the code it prod
 **[Proposal] Migrations are what the tests run against**
 - The test database is built with `alembic upgrade head`, not `create_all`, so a broken migration fails the tests instead of failing the deploy.
 - A test checks that the migrations and the models match (Alembic's autogenerate comparison finds no differences).
+
+**Tests throw away what a request didn't commit, as production does** (owner's decision, 2026-11-23)
+- In production, `get_db` closes each request's session, which discards anything the route didn't commit. In tests, every request shares the test's one session. So each request gets its own savepoint, rolled back when the request ends unless the route committed.
+- Before this, deleting `db.commit()` from the create-claim route left every claim test passing. With it, 8 tests fail. It also stops a rejected submit's claim from lingering in later checks.
+- Considered and rejected:
+  - The route rolling back itself. It adds app code for something production already does, and a forgotten commit still goes unnoticed.
+  - Changing the test's final check. It weakens a correct test, and the blind spot stays.
+  - A plain rollback on error, without the savepoint. It also discards the users and sign-ins the test set up, which broke 2 other tests.
 
 **[Proposal] Health checks**
 - `GET /api/health` also checks the database connection. It returns 503 if the database is unreachable, so a host or load balancer can tell when the app is down.

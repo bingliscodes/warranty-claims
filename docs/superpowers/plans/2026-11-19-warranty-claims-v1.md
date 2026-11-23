@@ -149,7 +149,7 @@ backend/
     uploads.py           POST /api/uploads
     claims/schemas.py    request/response models, US state codes, VIN rule
     claims/access.py     get_visible_claim
-    claims/routes.py     create/list/get/patch claims, warranty-company suggestions
+    claims/routes.py     create/list/get/patch claims, intake form options
     photos/labels.py     DamageLabel, the fixed list of damage photo descriptions
     photos/naming.py     export filename rules
     photos/attach.py     attach_photos (validate keys, move objects, create rows)
@@ -217,6 +217,7 @@ frontend/
   - `engine`, session-scoped: `create_engine(settings.DATABASE_URL)`, disposed at the end. Task 2 adds building the schema from the migrations.
   - `db`: each test runs inside one connection-level transaction that is rolled back afterwards, using `Session(bind=connection, join_transaction_mode="create_savepoint")`.
   - `app`: `create_app(settings)`, with `get_db` overridden to yield `db` and `app.state.session_factory` set to return `db` wrapped so that `close()` does nothing.
+    - **Changed 2026-11-23 (design §17):** the override opens a savepoint per request (`db.begin_nested()`) and rolls it back when the request ends, unless the route committed. This matches production, where `close()` throws away uncommitted work.
   - `client`: `TestClient(app)`.
 
 - [ ] **Step 1: Add dev services and repo files**
@@ -824,13 +825,15 @@ git commit -m "feat: export filename rules"
   - `VIN_PATTERN = r"^[A-HJ-NPR-Z0-9]{17}$"`.
   - **`ClaimFormData`**, with `extra="forbid"`; optional strings that are blank become `None`:
     - `customer_phone: str`: strip non-digits, then exactly 10 digits.
+      - **Changed 2026-11-23 (design §7):** 11 digits starting with 1 lose the 1 first, so "+1 (608) 555-0134" is stored as `6085550134`.
     - `customer_address: str` (1–200), `customer_city: str` (1–100).
     - `customer_state: str`: uppercased, must be in `US_STATE_CODES`.
     - `customer_zip: str`: exactly 5 digits.
     - `vehicle_year: int`: from 1900 to the current year + 2.
     - `vehicle_make: str` (1–60), `vehicle_model: str` (1–60).
     - `mileage: int | None` (0–2,000,000), `contract_number: str | None` (≤ 64).
-  - **`PhotoRef{key: str, kind: PhotoKind, description: str | None (≤ 200), original_filename: str | None (≤ 255)}`.**
+  - **`PhotoRef{key: str, kind: PhotoKind, description: DamageLabel | None, original_filename: str | None (≤ 255)}`.**
+  - **Changed 2026-11-23 (design §4, §8):** `DamageLabel` and `DAMAGE_LABELS` come from `app/photos/labels.py`, added with the naming cleanup after Task 5. `DamageLabel = Literal["Wheel RF", "Wheel LF", "Wheel LR", "Wheel RR"]` is a placeholder list, and `DAMAGE_LABELS = get_args(DamageLabel)`. A description that isn't on the list is a 422. The `photos.description` column stays plain text.
   - **`ClaimCreate`:**
     - Fields: `warranty_company` (1–120); `customer_first_name` and `customer_last_name` (1–100); `vin` (stripped, uppercased, must match `VIN_PATTERN`); `claim_number: str | None` (≤ 64); `submission_tz: str` (must load as a `ZoneInfo`); `form_data: ClaimFormData`; `photos: list[PhotoRef]` (2–60).
     - A model validator requires exactly one `vin` photo, at most one `mileage` photo, at least one `damage` photo, and a non-blank description on every damage photo.
@@ -839,17 +842,21 @@ git commit -m "feat: export filename rules"
     - `ClaimSummary{id, status, created_at, warranty_company, customer_first_name, customer_last_name, vin, claim_number, owner: UserBrief}`.
     - `ClaimDetail(ClaimSummary){form_data: dict, submission_tz, updated_at}`.
     - `ClaimPage{items: list[ClaimSummary], total, page, limit}`.
+    - `FormOptions{damage_labels: list[str], warranty_companies: list[str]}`.
 - **Produces `get_visible_claim(claim_id: int, user: User, db: Session) -> Claim`** in `app/claims/access.py`. Returns 404 `{"detail": "Claim not found"}` when the claim is missing, or when the user is a tech who doesn't own it.
 - **Produces `attach_photos(db: Session, storage: PhotoStorage, claim: Claim, refs: list[PhotoRef], user: User) -> list[Photo]`** in `app/photos/attach.py`:
   - First checks every key, before moving anything. Each key must start with `uploads/{user.id}/` and exist (`storage.head`). Otherwise it returns 422 `{"detail": "Photo upload not found"}`.
+  - **Changed 2026-11-23 (design §8):** "starts with" becomes the exact shape the upload route hands out, `uploads/{user.id}/{32 hex}.{an extension from EXTENSIONS}`. The shape is checked before `storage.head`, so storage is never asked about a key like `uploads/1/../2/….jpg`.
   - Then promotes each object and creates the `Photo` rows. `content_type` comes from `head`; `added_by` is the user.
+  - **Changed 2026-11-20 (design §8, "Copy now, delete later"):** `attach_photos` only copies. The route deletes the `uploads/` originals after `db.commit()` succeeds, and a failed delete doesn't fail the request. `PhotoStorage.promote` splits into a copy step and a delete step; the method names are settled during Task 6.
 - **Produces routes in `app/claims/routes.py`:**
   - `POST /api/claims` (`require_tech`): 201 `ClaimDetail`.
   - `GET /api/claims?q=&status=&page=1&limit=25` (limit at most 100): a `ClaimPage` sorted by `created_at` then `id`, newest first.
   - `GET /api/claims/{id}`: `ClaimDetail`.
-  - `GET /api/warranty-companies?q=`: `list[str]`, at most 10. Names that differ only in case appear once, using the earliest spelling. Matches anywhere in the name.
+  - `GET /api/options` (any signed-in user): `FormOptions`. `damage_labels` is `DAMAGE_LABELS`. `warranty_companies` is every name used on a claim, from `warranty_company_names(db)`; names that differ only in case appear once, using the earliest spelling. Most used first, ties alphabetical ignoring case (owner's decision, 2026-11-23). There's no `q` and no cap: the phone filters the list as the tech types.
+  - **Changed 2026-11-23 (design §4, §14):** this replaces `GET /api/warranty-companies?q=` (at most 10 matches).
 - **Produces fixtures:**
-  - `claim_payload(user) -> dict`: a valid `ClaimCreate` with fresh uploads. It has a VIN photo and one damage photo described `Wheel.RF`, in that order. Values:
+  - `claim_payload(user) -> dict`: a valid `ClaimCreate` with fresh uploads. It has a VIN photo and one damage photo described `Wheel RF`, in that order. Values:
     - Customer: Jane Smith, phone `(608) 555-0134`, `100 Main St`, Cary, `NC`, `27519`.
     - Vehicle: 2024 Honda Civic.
     - `Assurant`, VIN `1M8GDM9AXKP042788`, `America/New_York`.
@@ -901,12 +908,13 @@ def test_photo_rules(tech_client, claim_payload, tech, put_upload):
         payload["photos"] = photos
         return tech_client.post("/api/claims", json=payload).status_code
     vin = lambda: {"key": put_upload(tech), "kind": "vin"}
-    damage = lambda d="Wheel.RF": {"key": put_upload(tech), "kind": "damage", "description": d}
+    damage = lambda d="Wheel RF": {"key": put_upload(tech), "kind": "damage", "description": d}
     mileage = lambda: {"key": put_upload(tech), "kind": "mileage"}
     assert post([damage(), damage()]) == 422                  # no VIN photo
     assert post([vin(), vin(), damage()]) == 422              # two VIN photos
     assert post([vin(), mileage()]) == 422                    # no damage photo
     assert post([vin(), damage("  ")]) == 422                 # blank description
+    assert post([vin(), damage("Door LF")]) == 422            # not a damage label
     assert post([vin(), mileage(), mileage(), damage()]) == 422
     assert post([vin(), mileage(), damage()]) == 201
 
@@ -925,6 +933,7 @@ def test_forged_or_reused_photo_keys_rejected(tech_client, claim_payload, tech, 
 ```python
 # backend/tests/test_claims_list.py
 from app.models import ClaimStatus
+from app.photos.labels import DAMAGE_LABELS
 
 def ids(response):
     return [c["id"] for c in response.json()["items"]]
@@ -960,10 +969,12 @@ def test_pagination_newest_first(tech, reviewer_client, make_claim):
     assert [c["id"] for c in page1["items"]] == [c3.id, c2.id] and page1["total"] == 3
     assert [c["id"] for c in page2["items"]] == [c1.id]
 
-def test_warranty_company_suggestions(tech, tech_client, make_claim):
+def test_form_options(tech, tech_client, make_claim):
     for name in ["Assurant", "assurant", "CNA National"]:
         make_claim(tech, warranty_company=name)
-    assert tech_client.get("/api/warranty-companies", params={"q": "as"}).json() == ["Assurant"]
+    body = tech_client.get("/api/options").json()
+    assert body["damage_labels"] == list(DAMAGE_LABELS)
+    assert sorted(body["warranty_companies"]) == ["Assurant", "CNA National"]
 ```
 
 - [ ] **Step 2: Run them to see them fail**
@@ -971,7 +982,7 @@ def test_warranty_company_suggestions(tech, tech_client, make_claim):
 Run: `uv run pytest tests/test_claims_create.py tests/test_claims_list.py -v`
 Expected: FAIL, with 404s on `/api/claims` or a missing `claim_payload` fixture.
 
-- [ ] **Step 3: Implement the schemas, `get_visible_claim`, `attach_photos`, the routes and the fixtures per Interfaces.**
+- [ ] **Step 3: Implement the schemas, `get_visible_claim`, `attach_photos`, `warranty_company_names`, the routes and the fixtures per Interfaces.**
   - **Search:** `q` matches with case-insensitive `ILIKE %q%` against the first name, the last name, `first || ' ' || last`, the VIN and the claim number. Escape `%` and `_` in `q`.
   - **Submit order:** create the claim, flush to get its id, then call `attach_photos`.
 
@@ -990,6 +1001,8 @@ git commit -m "feat: claim submission, listing and search"
 ---
 
 ### Task 7: Photos on submitted claims, reviewer edits and export
+
+**Changed 2026-11-23 (design §4, §8): damage descriptions come from `DamageLabel`.** `PhotoUpdate.description` and the add-photos body use `DamageLabel | None`, so a value off the list is a 422. When this task opens, the test values below that aren't labels (`Door.LF`, `Hood`, `PDR.LQP`, `wheel.rf`, `Wheel.RF`) change to labels, and the export test's two same-wheel photos replace its case-insensitive duplicate.
 
 **Files:**
 - Create: `backend/app/photos/routes.py`.
@@ -1144,6 +1157,8 @@ git commit -m "feat: reviewer edits, added photos and zip export"
 ---
 
 ### Task 8: Chat thread and unread markers
+
+**Changed 2026-11-23 (design §8):** the damage description `Hood` in the tests below changes to a label from `DamageLabel`, such as `Wheel LF`.
 
 **Files:**
 - Create: `backend/app/conversations.py`, `backend/app/unread.py`.
@@ -1754,6 +1769,8 @@ git commit -m "feat: VIN and mileage extraction from OCR text"
 
 ### Task 13: Intake draft and photo upload pipeline
 
+**Changed 2026-11-23 (design §8, §14):** damage descriptions are a searchable dropdown of `damage_labels`, not a text input, and warranty company suggestions come from `warranty_companies`, filtered on the phone. Both lists come from `GET /api/options`, which replaces `GET /api/warranty-companies`. When this task opens, its interfaces and tests change to match, and description values such as `Wheel.RF` become labels such as `Wheel RF`.
+
 **Files:**
 - Create: `src/intake/draft.ts`, `src/intake/useIntakeDraft.ts`, `src/photos/image.ts`, `src/photos/upload.ts`.
 - Modify: `src/api/client.ts` (`requestUpload`) and `src/api/types.ts`.
@@ -1930,6 +1947,8 @@ git commit -m "feat: on-device intake draft and direct photo uploads"
 ---
 
 ### Task 14: Intake screens
+
+**Changed 2026-11-23 (design §8, §14):** damage descriptions are a searchable dropdown of `damage_labels`, not a text input, and warranty company suggestions come from `warranty_companies`, filtered on the phone. Both lists come from `GET /api/options`, which replaces `GET /api/warranty-companies`. When this task opens, its interfaces and tests change to match, and description values such as `Wheel.RF` become labels such as `Wheel RF`.
 
 **Files:**
 - Create: `src/lib/usStates.ts`, `src/intake/validate.ts`, `src/intake/IntakePage.tsx`, `src/intake/CustomerVehicleStep.tsx`, `src/intake/PhotosStep.tsx`, `src/components/PhotoSlot.tsx`, `src/test/fixtures.ts`.
@@ -2239,6 +2258,8 @@ git commit -m "feat: claims list with search, status filter and unread markers"
 ---
 
 ### Task 16: Claim detail, and the end-to-end check
+
+**Changed 2026-11-23 (design §8, §14):** damage descriptions are a searchable dropdown of `damage_labels`, not a text input, and warranty company suggestions come from `warranty_companies`, filtered on the phone. Both lists come from `GET /api/options`, which replaces `GET /api/warranty-companies`. When this task opens, its interfaces and tests change to match, and description values such as `Wheel.RF` become labels such as `Wheel RF`.
 
 **Files:**
 - Create: `src/review/ClaimDetailPage.tsx`, `src/review/ClaimFields.tsx`, `src/review/PhotoGallery.tsx`, `src/review/AddPhotos.tsx`, `src/review/ChatThread.tsx`.

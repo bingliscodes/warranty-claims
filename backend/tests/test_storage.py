@@ -17,13 +17,16 @@ def test_presigned_urls_use_configured_endpoint():
     )
 
 
-def test_promote_moves_object(storage):
+def test_copy_to_claim_keeps_the_original_until_deleted(storage):
     storage.client.put_object(
         Bucket="test-bucket", Key="uploads/1/abc.jpg", Body=b"x", ContentType="image/jpeg"
     )
-    new_key = storage.promote("uploads/1/abc.jpg", claim_id=7)
+    new_key = storage.copy_to_claim("uploads/1/abc.jpg", claim_id=7)
     assert new_key == "claims/7/abc.jpg"
     assert storage.head(new_key).content_type == "image/jpeg"
+    assert storage.head("uploads/1/abc.jpg") is not None
+
+    storage.delete("uploads/1/abc.jpg")
     assert storage.head("uploads/1/abc.jpg") is None
 
 

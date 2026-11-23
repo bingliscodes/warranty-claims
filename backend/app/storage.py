@@ -56,13 +56,17 @@ class PhotoStorage:
             raise
         return ObjectInfo(content_type=response["ContentType"], size=response["ContentLength"])
 
-    def promote(self, upload_key: str, claim_id: int) -> str:
+    def copy_to_claim(self, upload_key: str, claim_id: int) -> str:
+        """Server-side copy into claims/{claim_id}/. The original stays put until the
+        claim is saved; the caller then delete()s it (design §8, "Copy now, delete later")."""
         new_key = f"claims/{claim_id}/{posixpath.basename(upload_key)}"
         self.client.copy_object(
             Bucket=self.bucket, Key=new_key, CopySource={"Bucket": self.bucket, "Key": upload_key}
         )
-        self.client.delete_object(Bucket=self.bucket, Key=upload_key)
         return new_key
+
+    def delete(self, key: str) -> None:
+        self.client.delete_object(Bucket=self.bucket, Key=key)
 
 
 def build_storage(settings: Settings) -> PhotoStorage:

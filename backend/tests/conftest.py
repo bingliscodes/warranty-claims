@@ -1,4 +1,5 @@
 import os
+import uuid
 from pathlib import Path
 
 import boto3
@@ -14,7 +15,8 @@ from app.auth import COOKIE_NAME, start_session
 from app.config import Settings
 from app.db import get_db
 from app.main import create_app
-from app.models import Role, User
+from app.models import Claim, Role, User
+from app.photos.content_types import EXTENSIONS
 from app.storage import PhotoStorage, get_storage
 
 
@@ -101,7 +103,16 @@ def app(settings, db):
     app = create_app(settings)
 
     def override_get_db():
-        yield db
+        # In production, get_db's close() throws away whatever a request didn't commit.
+        # Here every request shares the test's session, so each request gets its own
+        # savepoint instead, rolled back at the end unless the route committed. Without
+        # this, a route that forgot db.commit() would still pass its tests.
+        request_work = db.begin_nested()
+        try:
+            yield db
+        finally:
+            if request_work.is_active:  # the route didn't commit
+                request_work.rollback()
 
     app.dependency_overrides[get_db] = override_get_db
     app.state.session_factory = lambda: _UnclosableSession(db)
@@ -166,3 +177,65 @@ def storage(app):
         photo_storage = PhotoStorage(client=client, bucket="test-bucket")
         app.dependency_overrides[get_storage] = lambda: photo_storage
         yield photo_storage
+
+
+@pytest.fixture
+def put_upload(storage):
+    """Call it to put a fake photo in storage as if the user's phone uploaded it:
+    put_upload(tech) -> "uploads/{tech.id}/{random}.jpg"."""
+
+    def _put_upload(
+        user: User, content_type: str = "image/jpeg", body: bytes = b"fake-jpeg-bytes"
+    ) -> str:
+        key = f"uploads/{user.id}/{uuid.uuid4().hex}.{EXTENSIONS[content_type]}"
+        storage.client.put_object(
+            Bucket=storage.bucket, Key=key, Body=body, ContentType=content_type
+        )
+        return key
+
+    return _put_upload
+
+
+@pytest.fixture
+def claim_payload(put_upload):
+    """Call it to get a valid POST /api/claims body for that user, with fresh uploads:
+    a VIN photo, then one damage photo described "Wheel RF"."""
+
+    def _claim_payload(user: User) -> dict:
+        return {
+            "warranty_company": "Assurant",
+            "customer_first_name": "Jane",
+            "customer_last_name": "Smith",
+            "vin": "1M8GDM9AXKP042788",
+            "claim_number": None,
+            "submission_tz": "America/New_York",
+            "form_data": {
+                "customer_phone": "(608) 555-0134",
+                "customer_address": "100 Main St",
+                "customer_city": "Cary",
+                "customer_state": "NC",
+                "customer_zip": "27519",
+                "vehicle_year": 2024,
+                "vehicle_make": "Honda",
+                "vehicle_model": "Civic",
+            },
+            "photos": [
+                {"key": put_upload(user), "kind": "vin"},
+                {"key": put_upload(user), "kind": "damage", "description": "Wheel RF"},
+            ],
+        }
+
+    return _claim_payload
+
+
+@pytest.fixture
+def make_claim(client_for, claim_payload, db):
+    """Call it to submit a claim through the API as that tech:
+    make_claim(tech, claim_number="AUTH-51") -> Claim."""
+
+    def _make_claim(owner: User, **overrides) -> Claim:
+        response = client_for(owner).post("/api/claims", json=claim_payload(owner) | overrides)
+        assert response.status_code == 201, response.text
+        return db.get(Claim, response.json()["id"])
+
+    return _make_claim
