@@ -70,6 +70,7 @@ The app replaces that:
 | Frontend | React / Jinja + HTMX / Vue | **React + Vite + TypeScript.** It suits the photo-heavy intake, the OCR worker, direct uploads and draft recovery. |
 | Reviewer notification | Email / SMS / in-app only | **Email.** |
 | Warranty company names | Free text with suggestions / list in a settings file / list reviewers manage | **Free text that suggests names used before.** Revisit after talking with Kim. |
+| Damage photo descriptions | Free text / a fixed list plus an "Other" free-text choice / a fixed list. Where the list lives: a Python enum stored as an enum column / a list in code that the API checks, with a plain text column / a database table | **A fixed list in code, checked by the API; the column stays plain text** (owner's decision, 2026-11-23; wireframe v3). An enum column would refuse to load old claims once a label is retired, and a table is more than a placeholder list needs. "Other" was dropped: it would let any text through, so the API couldn't enforce the list, and a fixed list lets the naming code assume clean labels. |
 | Bad photos after submission | Nothing / reviewer excludes from export / reviewer deletes | **Exclude from export**, reversibly. Deleting can come later; the exclude flag already marks the photos involved. |
 | Photo size | Untouched originals / shrink on the phone | **Originals.** See how upload speed holds up. |
 | Runtime versions | Postgres 16 and Python 3.12 / the newest releases (Postgres 18, Python 3.15) / the newest our dependencies fully support | **Postgres 18 and Python 3.14** (owner's decision, 2026-11-19). Postgres 19 isn't released. Python 3.15 is a month old and uvicorn's compiled extras don't ship for it yet. Whether the chosen host offers managed Postgres 18 gets checked in the deployment plan. |
@@ -115,7 +116,7 @@ The app replaces that:
 - **Warranty company:** free text, suggesting names already used on earlier claims.
 - **Photos:**
   - A VIN photo.
-  - At least one damage photo. **Every damage photo needs a description.**
+  - At least one damage photo. **Every damage photo needs a description, picked from the list of damage labels** (§8).
 
 **Optional**
 - Claim number and contract number. The reviewer usually adds these later.
@@ -140,7 +141,9 @@ This follows the wireframe's two intake phases.
    - The vehicle section starts with the VIN photo and the VIN field, so the VIN lookup can fill year, make and model on the same screen. This moves the VIN photo up from the wireframe's photo phase.
    - Optional claim number and contract number.
 2. **Photos:**
-   - Damage photos, each with a required free-text description, as the wireframe specifies (e.g. `Wheel.RF`, `PDR.LQP`).
+   - Damage photos, each with a required description picked from a searchable dropdown of damage labels (wireframe v3; owner's decision, 2026-11-23).
+     - The API rejects any description that isn't on the list. There is no "Other" choice.
+     - **Placeholder list** until the real one arrives: `Wheel RF`, `Wheel LF`, `Wheel LR`, `Wheel RR`.
    - The optional mileage photo with the mileage field.
 
 **Behavior**
@@ -170,7 +173,7 @@ The screens follow the wireframe's Review layout.
 - **Claim detail:**
   - Claim details and status, editable by reviewers.
   - Info photos: the VIN photo with the VIN, and the mileage photo with the mileage.
-  - Damage photos with descriptions, editable by reviewers.
+  - Damage photos with descriptions, which reviewers can change to another label from the same list.
   - A per-photo "exclude from export" toggle; excluded photos are shown greyed out.
   - The chat thread.
   - An export button.
@@ -200,10 +203,12 @@ The screens follow the wireframe's Review layout.
   - Example with made-up values: `ASSURANT.KP042788.SMITH.Wheel.RF.11.26.jpg`.
 - **Cleanup:**
   - Warranty company and last name are uppercased, with spaces, accents and apostrophes removed: "de la Cruz" → `DELACRUZ`, "Muñoz" → `MUNOZ`, "O'Brien" → `OBRIEN`.
-  - Spaces in descriptions become dots: "Wheel RF" → `Wheel.RF`.
-  - Repeated descriptions get `-2`, `-3`. Descriptions are compared case-insensitively.
-  - A suffix never reuses a name that's already taken: the count keeps going up until the name is unused (owner's decision, 2026-11-20). Typed descriptions `Wheel.RF`, `Wheel.RF` and `Wheel.RF-2` export as `Wheel.RF`, `Wheel.RF-2` and `Wheel.RF-2-2`. Two files in one zip never share a name.
-  - A damage description that cleans up to nothing, such as `///` or `李`, exports as `Damage` (owner's decision, 2026-11-20). Every filename stays well-formed, even though descriptions are only checked for being non-blank.
+  - A damage description is a label from the fixed list (§8), and its spaces become dots: "Wheel RF" → `Wheel.RF`.
+  - Repeated labels get `-2`, `-3`: three `Wheel RF` photos export as `Wheel.RF`, `Wheel.RF-2` and `Wheel.RF-3`.
+  - A suffix never reuses a name that's already taken: the count keeps going up until the name is unused (owner's decision, 2026-11-20). Two files in one zip never share a name.
+  - **Changed 2026-11-23 (owner's decision), now that descriptions come from the fixed list:**
+    - The cleanup of typed descriptions (accents, odd characters, repeated dots) is removed. So is the `Damage` fallback for a description that cleaned up to nothing, and the case-insensitive comparison of descriptions.
+    - The filename is protected by the list instead: a test checks that every label is letters and digits separated by single spaces. A `/` would make a folder inside the zip, and a `-` could look like a suffix.
 - **[Proposal]** VIN and mileage photos use `VIN` and `Mileage` as their description.
 - **[Proposal]** Reviewers can change a damage photo's description but can't blank it, so every filename has one.
 - The date part, and possibly the whole pattern, may change. Whether each warranty company has its own pattern is pending the owner's follow-up with Kim.
@@ -224,6 +229,7 @@ The screens follow the wireframe's Review layout.
 - **Chat message:** claim, sender, contents, time.
 - **Claim read state:** user, claim, last-read time.
 - **Warranty company suggestions:** the distinct names already used on claims. No separate table.
+- **Damage labels:** a fixed list in the backend code, not a table. A photo's description column stays plain text, so a retired label still loads and exports.
 
 ## 14. API changes from the wireframe [Proposal]
 
@@ -252,6 +258,7 @@ The screens follow the wireframe's Review layout.
 - **Pending Kim:**
   - Whether warranty companies need their own filename patterns.
   - Whether company names should come from a managed list.
+- **The real list of damage labels** replaces the placeholder in §8.
 - **Reviewer photo deletion.** Straightforward to add later: excluded photos are already flagged. Delete adds removing the stored file and deciding who may do it.
 - Monitoring, invoices, email to techs on replies, shrinking photos before upload.
 

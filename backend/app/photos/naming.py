@@ -16,13 +16,7 @@ def upper_segment(value: str) -> str:
 
 
 def description_segment(value: str) -> str:
-    text = unicodedata.normalize("NFKD", value)
-    text = text.encode("ascii", "ignore").decode()
-    text = text.strip()
-    text = re.sub(r"\s+", ".", text)
-    text = re.sub(r"[^A-Za-z0-9._-]", "", text)
-    text = re.sub(r"\.{2,}", ".", text)
-    text = text.strip(".-_")
+    text = value.replace(" ", ".")
     return text
 
 
@@ -63,7 +57,7 @@ def _base_description(photo: Photo) -> str:
         return "VIN"
     if photo.kind == PhotoKind.mileage:
         return "Mileage"
-    return description_segment(photo.description or "") or "Damage"
+    return description_segment(photo.description)
 
 
 def export_filenames(claim: Claim) -> dict[int, str]:
@@ -76,15 +70,15 @@ def export_filenames(claim: Claim) -> dict[int, str]:
     for photo in photos:
         base = _base_description(photo)
 
-        if base.lower() not in taken:
+        if base not in taken:
             description = base
         else:
             photo_count = 2
-            while f"{base}-{photo_count}".lower() in taken:
+            while f"{base}-{photo_count}" in taken:
                 photo_count += 1
             description = f"{base}-{photo_count}"
 
-        taken.add(description.lower())
+        taken.add(description)
 
         names[photo.id] = export_filename(
             warranty_company=claim.warranty_company,

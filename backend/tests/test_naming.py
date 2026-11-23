@@ -1,16 +1,17 @@
+import re
 from datetime import UTC, datetime
 
 import pytest
+
+from app.models import Claim, Photo, PhotoKind
+from app.photos.labels import DAMAGE_LABELS
 from app.photos.naming import (
-    description_segment,
     export_filename,
     export_filenames,
     submission_month_year,
     upper_segment,
     zip_filename,
 )
-
-from app.models import Claim, Photo, PhotoKind
 
 NOV_13 = datetime(2026, 11, 13, 15, 0, tzinfo=UTC)
 
@@ -58,21 +59,6 @@ def test_upper_segment(raw, expected):
 
 
 @pytest.mark.parametrize(
-    "raw, expected",
-    [
-        (" Wheel RF ", "Wheel.RF"),
-        ("PDR.LQP", "PDR.LQP"),
-        ("door ding / LF", "door.ding.LF"),
-        ("rear-bumper_LF", "rear-bumper_LF"),
-        ("--Wheel RF..", "Wheel.RF"),
-        ("///", ""),
-    ],
-)
-def test_description_segment(raw, expected):
-    assert description_segment(raw) == expected
-
-
-@pytest.mark.parametrize(
     "utc, tz, expected",
     [
         (datetime(2026, 12, 1, 3, 30, tzinfo=UTC), "America/New_York", ("11", "26")),
@@ -113,11 +99,11 @@ def build_claim(*damage, excluded=()):
 
 
 def test_export_filenames_defaults_dedupes_and_skips_excluded():
-    assert export_filenames(build_claim("Wheel.RF", "wheel.rf", "PDR.LQP", excluded={13})) == {
+    assert export_filenames(build_claim("Wheel RF", "Wheel RF", "Wheel LF", excluded={13})) == {
         10: "ASSURANT.KP042788.SMITH.VIN.11.26.jpg",
         20: "ASSURANT.KP042788.SMITH.Mileage.11.26.jpg",
         11: "ASSURANT.KP042788.SMITH.Wheel.RF.11.26.jpg",
-        12: "ASSURANT.KP042788.SMITH.wheel.rf-2.11.26.jpg",
+        12: "ASSURANT.KP042788.SMITH.Wheel.RF-2.11.26.jpg",
     }
 
 
@@ -132,19 +118,18 @@ def damage_names(claim):
 
 
 def test_duplicate_suffix_counts_up_past_taken_names():
-    claim = build_claim("Wheel.RF", "Wheel.RF", "Wheel.RF-2", "WHEEL.RF")
+    claim = build_claim("Wheel RF", "Wheel RF", "Wheel RF", "Wheel RF")
     assert damage_names(claim) == [
         "ASSURANT.KP042788.SMITH.Wheel.RF.11.26.jpg",
         "ASSURANT.KP042788.SMITH.Wheel.RF-2.11.26.jpg",
-        "ASSURANT.KP042788.SMITH.Wheel.RF-2-2.11.26.jpg",
-        "ASSURANT.KP042788.SMITH.WHEEL.RF-3.11.26.jpg",
+        "ASSURANT.KP042788.SMITH.Wheel.RF-3.11.26.jpg",
+        "ASSURANT.KP042788.SMITH.Wheel.RF-4.11.26.jpg",
     ]
 
 
-def test_description_that_cleans_to_nothing_exports_as_damage():
-    claim = build_claim("///", "李", "damage")
-    assert damage_names(claim) == [
-        "ASSURANT.KP042788.SMITH.Damage.11.26.jpg",
-        "ASSURANT.KP042788.SMITH.Damage-2.11.26.jpg",
-        "ASSURANT.KP042788.SMITH.damage-3.11.26.jpg",
-    ]
+def test_every_damage_label_is_filename_safe():
+    # Export only turns spaces into dots, so any other character in a label goes
+    # straight into the filename: a "/" would make a folder inside the zip, and a "-"
+    # could look like a -2 suffix. Letters and digits separated by single spaces only.
+    for label in DAMAGE_LABELS:
+        assert re.fullmatch(r"[A-Za-z0-9]+( [A-Za-z0-9]+)*", label), label

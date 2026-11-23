@@ -150,6 +150,7 @@ backend/
     claims/schemas.py    request/response models, US state codes, VIN rule
     claims/access.py     get_visible_claim
     claims/routes.py     create/list/get/patch claims, warranty-company suggestions
+    photos/labels.py     DamageLabel, the fixed list of damage photo descriptions
     photos/naming.py     export filename rules
     photos/attach.py     attach_photos (validate keys, move objects, create rows)
     photos/routes.py     list/add/patch photos, export zip
@@ -694,6 +695,8 @@ git commit -m "feat: pre-signed photo uploads to S3-compatible storage"
 ---
 
 ### Task 5: Export filename rules
+
+**Changed 2026-11-23 (design §8, §12), after this task was built:** damage descriptions come from a fixed list, `DamageLabel` in `app/photos/labels.py`. `description_segment` now only turns spaces into dots. The cleanup of typed text, the `Damage` fallback and the case-insensitive comparison are removed, and `test_every_damage_label_is_filename_safe` checks the list instead. The steps below describe Task 5 as first built.
 
 **Files:**
 - Create: `backend/app/photos/__init__.py`, `backend/app/photos/naming.py`.
