@@ -3,9 +3,9 @@ from sqlalchemy import ColumnElement, func, or_, select
 from sqlalchemy.dialects.postgresql import aggregate_order_by
 from sqlalchemy.orm import Session
 
-from app.auth import get_current_user, require_tech
+from app.auth import get_current_user, require_reviewer, require_tech
 from app.claims.access import get_visible_claim, visible_claims
-from app.claims.schemas import ClaimCreate, ClaimDetail, ClaimPage, FormOptions
+from app.claims.schemas import ClaimCreate, ClaimDetail, ClaimPage, ClaimUpdate, FormOptions
 from app.db import get_db
 from app.models import Claim, ClaimStatus, User
 from app.photos.attach import attach_photos, delete_uploads
@@ -122,6 +122,20 @@ def read_claim(
     claim_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)
 ) -> Claim:
     return get_visible_claim(claim_id, user, db)
+
+
+@router.patch("/claims/{claim_id}", response_model=ClaimDetail)
+def update_claim(
+    claim_id: int,
+    body: ClaimUpdate,
+    user: User = Depends(require_reviewer),
+    db: Session = Depends(get_db),
+) -> Claim:
+    claim = get_visible_claim(claim_id, user, db)
+    for field, value in body.model_dump(exclude_unset=True).items():
+        setattr(claim, field, value)
+    db.commit()
+    return claim
 
 
 @router.get("/options", response_model=FormOptions)

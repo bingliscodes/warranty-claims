@@ -13,6 +13,7 @@ from pydantic import (
     ConfigDict,
     Field,
     StringConstraints,
+    ValidationInfo,
     field_validator,
     model_validator,
 )
@@ -124,6 +125,9 @@ Vin = Annotated[str, BeforeValidator(_strip_upper), StringConstraints(pattern=VI
 # Optional text: "" or "  " is stored as None. Lengths go in Field(None, max_length=...).
 OptionalStr = Annotated[str | None, BeforeValidator(_blank_to_none)]
 OptionalInt = Annotated[int | None, BeforeValidator(_blank_to_none)]
+# A damage label, or None. Blank becomes None, so a damage photo without a label gets
+# the clearer "needs a description" error rather than "not a label".
+OptionalLabel = Annotated[DamageLabel | None, BeforeValidator(_blank_to_none)]
 
 
 class _Input(BaseModel):
@@ -163,10 +167,16 @@ class PhotoRef(_Input):
 
     key: str
     kind: PhotoKind
-    # Blank becomes None, so a damage photo without a label gets the clearer
-    # "needs a description" error rather than "not a label".
-    description: Annotated[DamageLabel | None, BeforeValidator(_blank_to_none)] = None
+    description: OptionalLabel = None
     original_filename: OptionalStr = Field(None, max_length=255)
+
+    @model_validator(mode="after")
+    def _photo_rules(self) -> Self:
+        if self.kind == PhotoKind.damage and self.description is None:
+            raise ValueError("Every damage photo needs a description")
+        if self.kind != PhotoKind.damage and self.description is not None:
+            raise ValueError("Only damage photos have a description")
+        return self
 
 
 class ClaimCreate(_Input):
@@ -197,12 +207,73 @@ class ClaimCreate(_Input):
             raise ValueError("At most one mileage photo is allowed")
         if kinds[PhotoKind.damage] < 1:
             raise ValueError("At least one damage photo is required")
-        if any(p.kind == PhotoKind.damage and p.description is None for p in self.photos):
-            raise ValueError("Every damage photo needs a description")
         keys = [photo.key for photo in self.photos]
         if len(set(keys)) != len(keys):
             raise ValueError("Duplicate photo key")
         return self
+
+
+class PhotoAdd(_Input):
+    """Photos the owning tech adds to a claim after submitting it (design §9)."""
+
+    photos: Annotated[list[PhotoRef], Field(min_length=1, max_length=30)]
+
+    @model_validator(mode="after")
+    def _photo_rules(self) -> Self:
+        kinds = Counter(photo.kind for photo in self.photos)
+        if kinds[PhotoKind.vin] >= 1:
+            raise ValueError("A VIN photo can't be added after submitting")
+        if kinds[PhotoKind.mileage] > 1:
+            raise ValueError("At most one mileage photo is allowed")
+        keys = [photo.key for photo in self.photos]
+        if len(set(keys)) != len(keys):
+            raise ValueError("Duplicate photo key")
+        return self
+
+
+# --- Reviewer edits ---------------------------------------------------------------
+#
+# A PATCH body changes only the fields it sends. A field left out keeps its value.
+# Sending null clears a field, which only claim_number allows: every other column is
+# required, so null there is a 422.
+
+
+def _reject_null(value: Any, info: ValidationInfo) -> Any:
+    # A field validator never sees fields left out, so this only catches an explicit null.
+    if value is None:
+        raise ValueError(f"{info.field_name} can't be cleared")
+    return value
+
+
+class ClaimUpdate(_Input):
+    """A reviewer's edit to a claim (design §9). submission_tz isn't here, so it can't be
+    edited (design §12)."""
+
+    warranty_company: str | None = Field(None, min_length=1, max_length=120)
+    customer_first_name: str | None = Field(None, min_length=1, max_length=100)
+    customer_last_name: str | None = Field(None, min_length=1, max_length=100)
+    vin: Vin | None = None
+    claim_number: OptionalStr = Field(None, max_length=64)
+    status: ClaimStatus | None = None
+    form_data: ClaimFormData | None = None  # replaces the whole object
+
+    _not_null = field_validator(
+        "warranty_company",
+        "customer_first_name",
+        "customer_last_name",
+        "vin",
+        "status",
+        "form_data",
+    )(_reject_null)
+
+
+class PhotoUpdate(_Input):
+    """A reviewer's edit to one photo (design §9, §12)."""
+
+    description: OptionalLabel = None
+    excluded: bool | None = None
+
+    _not_null = field_validator("description", "excluded")(_reject_null)
 
 
 # --- Responses --------------------------------------------------------------------
@@ -235,6 +306,21 @@ class ClaimDetail(ClaimSummary):
     form_data: dict[str, Any]
     submission_tz: str
     updated_at: datetime
+
+
+class PhotoOut(BaseModel):
+    """One photo as the claim screens see it. Built by the photo routes, because url and
+    export_filename aren't columns."""
+
+    id: int
+    kind: PhotoKind
+    description: str | None
+    excluded: bool
+    original_filename: str | None
+    added_by: UserBrief
+    created_at: datetime
+    url: str  # a short-lived download link (presign_download)
+    export_filename: str | None  # None when the photo is excluded from the export
 
 
 class ClaimPage(BaseModel):

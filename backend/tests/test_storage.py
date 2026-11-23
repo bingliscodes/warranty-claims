@@ -42,3 +42,9 @@ def test_head_raises_errors_other_than_missing_object(storage):
     broken = PhotoStorage(storage.client, "no-such-bucket")
     with pytest.raises(ClientError):
         broken.head("claims/7/abc.jpg")
+
+
+def test_iter_object_streams_the_bytes_in_chunks(storage):
+    storage.client.put_object(Bucket="test-bucket", Key="claims/7/abc.jpg", Body=b"0123456789")
+    chunks = storage.iter_object("claims/7/abc.jpg", chunk_size=4)
+    assert list(chunks) == [b"0123", b"4567", b"89"]

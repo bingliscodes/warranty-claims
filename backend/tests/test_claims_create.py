@@ -91,6 +91,10 @@ def test_photo_rules(tech_client, claim_payload, tech, put_upload):
     assert post([vin(), mileage()]) == 422  # no damage photo
     assert post([vin(), damage("  ")]) == 422  # blank description
     assert post([vin(), damage("Door LF")]) == 422  # not a damage label (design §8)
+    labelled_vin = vin() | {"description": "Wheel RF"}
+    assert post([labelled_vin, damage()]) == 422  # VIN photos take no description (§12)
+    labelled_mileage = mileage() | {"description": "Wheel RF"}
+    assert post([vin(), labelled_mileage, damage()]) == 422  # nor do mileage photos
     assert post([vin(), mileage(), mileage(), damage()]) == 422  # two mileage photos
     twice = damage()
     assert post([vin(), twice, twice]) == 422  # same key twice (design §8)

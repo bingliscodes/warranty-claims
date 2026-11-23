@@ -1027,6 +1027,15 @@ git commit -m "feat: claim submission, listing and search"
   - An `application/zip` stream with `Content-Disposition: attachment; filename="<zip_filename>"`.
   - Entries are named by `export_filenames` and stored uncompressed (`ZIP_STORED`). The zip is built in a `SpooledTemporaryFile`.
   - 409 `{"detail": "No photos to export"}` when every photo is excluded.
+  - **Changed 2026-11-23 (design §12):** `require_reviewer`, so a tech gets 403. Add a test for it.
+
+**Also decided 2026-11-23, when this task opened:**
+- `ClaimUpdate` has no `submission_tz` field, so sending one is a 422 (design §12).
+- The same key twice in one add-photos request gets 422 "Duplicate photo key" (design §8).
+- An explicit `null` in `PhotoUpdate` is a 422, as in `ClaimUpdate`.
+- A description on a VIN or mileage photo is a 422 on submit, on add-photos and in the photo edit (design §12).
+- `iter_object` was in Task 4's interface but never built, so it's added here, with a test.
+- Where the photo rules live (design §8): the label rules on `PhotoRef`, replacing `ClaimCreate`'s damage-label check. The request-only rules go in a `PhotoAdd` model validator, and the closed and existing-mileage rules in a function the add route calls.
 
 - [ ] **Step 1: Write the failing tests**
 

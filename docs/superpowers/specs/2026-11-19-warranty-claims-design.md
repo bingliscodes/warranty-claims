@@ -164,10 +164,15 @@ This follows the wireframe's two intake phases.
   - **[Proposal]** The lookup goes through the backend with a short timeout. It fills only fields that are still empty, so it never overwrites what the tech typed.
 - **Submit:** one small request that references the uploaded photos, after which reviewers are emailed.
   - **Copy now, delete later** (owner's decision, 2026-11-20). Submit copies each photo from `uploads/` to `claims/{id}/`, and deletes the `uploads/` originals only after the claim is saved. If submit fails partway, the originals are still there, so the tech's retry works without picking photos again. If the delete fails, submit still succeeds, because `uploads/` expires after 7 days anyway. The worst leftover is an unused copy under `claims/`. Adding photos to a submitted claim works the same way.
-  - **The same photo key twice in one submit gets 422** with "Duplicate photo key" (owner's decision, 2026-11-20). Otherwise it would hit the database's unique storage key and come back as an unexplained 500. A clear 422 is easier to debug and audit.
+  - **The same photo key twice in one submit gets 422** with "Duplicate photo key" (owner's decision, 2026-11-20). Adding photos to a submitted claim follows the same rule (owner's decision, 2026-11-23). Otherwise it would hit the database's unique storage key and come back as an unexplained 500. A clear 422 is easier to debug and audit.
   - **A photo key must have the exact shape the upload route hands out**, `uploads/{the tech's user id}/{32 hex characters}.{jpg or png}`. Anything else gets 422 "Photo upload not found" before storage is asked about it (owner's decision, 2026-11-23).
     - Why: checking only that the key starts with the tech's own folder let `uploads/{id}/../{other id}/…` through to storage. Nothing leaked, but SeaweedFS answers 400 to such a key, and that came back as a 500.
     - Rejected: treating every storage error as "not found". It would report a storage outage as a missing photo.
+  - **Where the photo rules are checked: split by what each rule needs** (owner's decision, 2026-11-23).
+    - **Rules about one photo** live on the photo schema, which submit and add-photos share: a damage photo needs a label, and a VIN or mileage photo can't have one.
+    - **Rules about the whole request** live on that request's schema: how many photos of each kind, and no repeated key.
+    - **Rules that need the saved claim** live in a function the route calls after loading it: Closed, or already has a mileage photo.
+    - Why: a malformed request is refused before the route runs and never touches the database, as submit already works. Rejected: one function holding every add-photo rule. It reads in one place, but works differently from submit and returns a different error shape.
 
 ## 9. Review (laptop)
 
@@ -208,8 +213,10 @@ The screens follow the wireframe's Review layout.
 ## 12. Photo export
 
 - **[Proposal]** A claim's photos download together as one zip file. Excluded photos are left out.
+- **Only reviewers can download the zip** (owner's decision, 2026-11-23), as §5 lists. A tech still sees their claim's photos, but gets 403 on the export.
 - **Filename:** `{WARRANTY COMPANY}.{last 8 of VIN}.{CUSTOMER LAST NAME}.{photo description}.{MM}.{YY}.{ext}`
   - MM and YY are the submission month and year, in the tech's time zone at submission.
+  - Reviewers can't edit the submission time zone (owner's decision, 2026-11-23). It records where the phone was at submit, not a claim detail Kim would correct.
   - Example with made-up values: `ASSURANT.KP042788.SMITH.Wheel.RF.11.26.jpg`.
 - **Cleanup:**
   - Warranty company and last name are uppercased, with spaces, accents and apostrophes removed: "de la Cruz" → `DELACRUZ`, "Muñoz" → `MUNOZ`, "O'Brien" → `OBRIEN`.
@@ -220,6 +227,7 @@ The screens follow the wireframe's Review layout.
     - The cleanup of typed descriptions (accents, odd characters, repeated dots) is removed. So is the `Damage` fallback for a description that cleaned up to nothing, and the case-insensitive comparison of descriptions.
     - The filename is protected by the list instead: a test checks that every label is letters and digits separated by single spaces. A `/` would make a folder inside the zip, and a `-` could look like a suffix.
 - **[Proposal]** VIN and mileage photos use `VIN` and `Mileage` as their description.
+- **A VIN or mileage photo can't carry a description** (owner's decision, 2026-11-23). Submitting, adding photos and the reviewer's photo edit all answer 422. The export always names those photos `VIN` and `Mileage`, so a description on one would show on the review screen but never be used.
 - **[Proposal]** Reviewers can change a damage photo's description but can't blank it, so every filename has one.
 - The date part, and possibly the whole pattern, may change. Whether each warranty company has its own pattern is pending the owner's follow-up with Kim.
   - **[Proposal]** Until then, one pattern lives in one function that takes the date and the parts as inputs. A change is a small code edit with tests.

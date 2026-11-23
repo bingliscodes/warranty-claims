@@ -1,4 +1,5 @@
 import posixpath
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 import boto3
@@ -64,6 +65,15 @@ class PhotoStorage:
             Bucket=self.bucket, Key=new_key, CopySource={"Bucket": self.bucket, "Key": upload_key}
         )
         return new_key
+
+    def iter_object(self, key: str, chunk_size: int = 1_048_576) -> Iterator[bytes]:
+        """The object's bytes, a chunk at a time (1 MB by default), so a large photo
+        never has to fit in memory all at once."""
+        body = self.client.get_object(Bucket=self.bucket, Key=key)["Body"]
+        try:
+            yield from body.iter_chunks(chunk_size)
+        finally:
+            body.close()
 
     def delete(self, key: str) -> None:
         self.client.delete_object(Bucket=self.bucket, Key=key)
