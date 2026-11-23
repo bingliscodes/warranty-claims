@@ -4,7 +4,7 @@ Techs file warranty claims (customer and vehicle details plus photos) from an iP
 
 - Design (approved): `docs/superpowers/specs/2026-11-19-warranty-claims-design.md`
 - Implementation plan: `docs/superpowers/plans/2026-11-19-warranty-claims-v1.md`
-- Original wireframe: `warranty_wireframe_v2.excalidraw`
+- Wireframes: kept locally, not in git. The current one is `warranty_wireframe_v3.excalidraw`.
 
 ## Working rules
 
