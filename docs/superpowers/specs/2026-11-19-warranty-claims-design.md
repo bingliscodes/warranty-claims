@@ -161,6 +161,8 @@ This follows the wireframe's two intake phases.
 - **VIN decoding:**
   - When a valid VIN is entered or read by OCR, the app looks up year, make and model through NHTSA vPIC and fills them in. They stay editable.
   - If the lookup fails, the fields stay blank for the tech to fill.
+  - **The lookup route is strict** (owner's decision, 2026-11-24). The phone trims and uppercases the VIN before looking it up, so the backend doesn't clean it again: a VIN that fails the VIN rule, lowercase included, gets 422 and no lookup is made.
+  - **An unknown VIN isn't an error** (owner's decision, 2026-11-24). vPIC answers it with blank fields, so the route answers 200 with year, make and model all null, and the phone fills nothing.
   - **[Proposal]** The lookup goes through the backend with a short timeout. It fills only fields that are still empty, so it never overwrites what the tech typed.
 - **Submit:** one small request that references the uploaded photos, after which reviewers are emailed.
   - **Copy now, delete later** (owner's decision, 2026-11-20). Submit copies each photo from `uploads/` to `claims/{id}/`, and deletes the `uploads/` originals only after the claim is saved. If submit fails partway, the originals are still there, so the tech's retry works without picking photos again. If the delete fails, submit still succeeds, because `uploads/` expires after 7 days anyway. The worst leftover is an unused copy under `claims/`. Adding photos to a submitted claim works the same way.

@@ -1393,7 +1393,7 @@ git commit -m "feat: email reviewers when a claim is submitted"
 
 **Files:**
 - Create: `backend/app/vin_decode.py`.
-- Modify: `backend/app/main.py`. Include the router, create `app.state.vpic_client = httpx.Client(timeout=5)` and close it on shutdown.
+- Modify: `backend/app/main.py`. Include the router, create `app.state.vpic_client = httpx.Client(timeout=5)` and close it on shutdown through a FastAPI `lifespan` (`on_event` is deprecated; owner's call, 2026-11-24).
 - Test: `backend/tests/test_vin_decode.py`.
 
 **Interfaces:**
@@ -1403,10 +1403,11 @@ git commit -m "feat: email reviewers when a claim is submitted"
   - Sends `GET {base_url}/vehicles/DecodeVinValues/{vin}?format=json`.
   - Reads `Results[0]["ModelYear" | "Make" | "Model"]`. Blank values become `None`, and a non-numeric year becomes `None`.
   - Raises `VinDecodeError` on an HTTP error status, a transport error or timeout, or a bad body.
+  - Logs each failure with `logger.warning("VIN lookup failed (%s)", type(exc).__name__)`: the error type only, so the VIN in vPIC's URL stays out of the logs (owner's call, 2026-11-24).
 - **Produces `get_vpic_client(request: Request) -> httpx.Client`.**
 - **Produces `GET /api/vin/{vin}/decode`** for any signed-in user:
-  - 200 `VinDecodeOut`.
-  - 422 when the VIN fails `VIN_PATTERN`. No lookup is made.
+  - 200 `VinDecodeOut`. An unknown VIN comes back from vPIC with blank fields, so it's 200 with all three null, not 404 (design §8).
+  - 422 when the VIN fails `VIN_PATTERN`, lowercase included: the phone's `normalizeVin` cleans it first, so the route doesn't (design §8). No lookup is made.
   - 503 `{"detail": "VIN lookup unavailable"}` on `VinDecodeError`.
 
 - [ ] **Step 1: Write the failing tests**
