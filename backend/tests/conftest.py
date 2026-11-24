@@ -1,5 +1,6 @@
 import os
 import uuid
+from email.message import EmailMessage
 from pathlib import Path
 
 import boto3
@@ -18,6 +19,20 @@ from app.main import create_app
 from app.models import Claim, Role, User
 from app.photos.content_types import EXTENSIONS
 from app.storage import PhotoStorage, get_storage
+
+
+@pytest.fixture(autouse=True)
+def outbox(monkeypatch) -> list[EmailMessage]:
+    """Every test: emails land in this list instead of going to a mail server.
+
+    Autouse, so no test that submits a claim sends real mail. A test can still swap in its
+    own send_email with monkeypatch.setattr.
+    """
+    sent: list[EmailMessage] = []
+    monkeypatch.setattr(
+        "app.notifications.send_email", lambda message, settings: sent.append(message)
+    )
+    return sent
 
 
 @pytest.fixture(scope="session")

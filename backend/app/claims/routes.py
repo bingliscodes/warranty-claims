@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request
 from sqlalchemy import ColumnElement, func, or_, select
 from sqlalchemy.dialects.postgresql import aggregate_order_by
 from sqlalchemy.orm import Session
@@ -6,8 +6,10 @@ from sqlalchemy.orm import Session
 from app.auth import get_current_user, require_reviewer, require_tech
 from app.claims.access import get_visible_claim, visible_claims
 from app.claims.schemas import ClaimCreate, ClaimDetail, ClaimPage, ClaimUpdate, FormOptions
+from app.config import Settings, get_settings
 from app.db import get_db
 from app.models import Claim, ClaimStatus, User
+from app.notifications import notify_reviewers_of_new_claim
 from app.photos.attach import attach_photos, delete_uploads
 from app.photos.labels import DAMAGE_LABELS
 from app.storage import PhotoStorage, get_storage
@@ -70,6 +72,9 @@ def warranty_company_names(db: Session) -> list[str]:
 @router.post("/claims", status_code=201, response_model=ClaimDetail)
 def create_claim(
     body: ClaimCreate,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    settings: Settings = Depends(get_settings),
     user: User = Depends(require_tech),
     db: Session = Depends(get_db),
     storage: PhotoStorage = Depends(get_storage),
@@ -88,6 +93,12 @@ def create_claim(
     db.flush()  # assigns claim.id, which the photos' new keys need
     attach_photos(db, storage, claim, body.photos, user)
     db.commit()
+    background_tasks.add_task(
+        notify_reviewers_of_new_claim,
+        claim.id,
+        request.app.state.session_factory,
+        settings,
+    )
     # Only now that the claim is saved: a failure before this point leaves the
     # originals in place, so the tech's retry still works (design §8).
     delete_uploads(storage, [ref.key for ref in body.photos])
