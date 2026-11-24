@@ -9,9 +9,11 @@ from app.auth import OriginCheckMiddleware
 from app.auth import router as auth_router
 from app.claims.routes import router as claims_router
 from app.config import Settings
+from app.conversations import router as conversations_router
 from app.db import get_db, make_session_factory
 from app.photos.routes import router as photos_router
 from app.storage import build_storage
+from app.unread import router as unread_router
 from app.uploads import router as upload_router
 
 logger = logging.getLogger(__name__)
@@ -28,6 +30,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(upload_router)
     app.include_router(claims_router)
     app.include_router(photos_router)
+    app.include_router(conversations_router)
+    app.include_router(unread_router)
 
     @app.get("/api/health")
     def health(response: Response, db: Session = Depends(get_db)) -> dict[str, str]:

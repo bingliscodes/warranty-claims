@@ -300,6 +300,7 @@ class ClaimSummary(_Output):
     vin: str
     claim_number: str | None
     owner: UserBrief
+    unread: bool  # not a column: the route sets it with fill_unread (design §10)
 
 
 class ClaimDetail(ClaimSummary):
@@ -321,6 +322,21 @@ class PhotoOut(BaseModel):
     created_at: datetime
     url: str  # a short-lived download link (presign_download)
     export_filename: str | None  # None when the photo is excluded from the export
+
+
+# --- Chat (design §10) ------------------------------------------------------------
+
+
+class MessageIn(_Input):
+    # _Input strips spaces first, so a message of only spaces fails min_length.
+    contents: str = Field(min_length=1, max_length=4000)
+
+
+class MessageOut(_Output):
+    id: int
+    contents: str
+    created_at: datetime
+    sender: UserBrief
 
 
 class ClaimPage(BaseModel):

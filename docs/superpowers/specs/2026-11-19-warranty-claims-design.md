@@ -201,6 +201,14 @@ The screens follow the wireframe's Review layout.
 - **For reviewers:** a claim is unread when, since that reviewer last opened it, the tech has either posted a message or added photos. A claim a reviewer has never opened is unread for that reviewer.
 - **[Proposal]** Read state is tracked per reviewer, so Kim reading a claim doesn't clear it for another reviewer.
 - **[Proposal]** Photos added after submission don't email reviewers; the unread marker is enough.
+- **Read state is a bookmark** (owner's decision, 2026-11-24). Opening a claim calls `POST /claims/{id}/read`, and so does each poll that brings in something new. The server saves the claim's newest message ID and newest photo ID at that moment.
+  - **The gap:** a message or photo that arrives between the page fetching and calling `/read` is bookmarked before it's on screen. The open page still shows it on its next poll. Only the list's marker is lost, and only if the user leaves within that poll.
+  - **Considered:** the page sends the IDs it shows. Not worth the extra moving parts for a gap of milliseconds.
+- **Out-of-order saves are accepted for v1** (owner's decision, 2026-11-24). Two messages sent on the same claim within milliseconds, by anyone, can save in the opposite order from their IDs.
+  - A poll in between can skip the lower ID until the page reloads.
+  - A `/read` in between can bookmark past it, so it never marks the claim unread.
+  - **If that matters later,** lock the claim row while adding a message or photo.
+- **Every response that returns a whole claim carries a correct `unread`** (owner's decision, 2026-11-24). Opening (`GET`), submitting (`POST /claims`) and editing (`PATCH`) all fill it in with one helper, so it's never a placeholder.
 
 ## 11. Reviewer email
 
@@ -245,7 +253,7 @@ The screens follow the wireframe's Review layout.
   - Storage key, description, original filename, and an excluded-from-export flag.
   - Who added it and when, which separates intake photos from later additions and drives reviewer unread markers.
 - **Chat message:** claim, sender, contents, time.
-- **Claim read state:** user, claim, last-read time.
+- **Claim read state:** user, claim, and the newest message ID and photo ID they'd seen. Anything with a higher ID is unread (§10). IDs, not a time, because two saves can share a timestamp.
 - **Warranty company suggestions:** the distinct names already used on claims. No separate table.
   - **Most used first** (owner's decision, 2026-11-23), so the companies on most claims are one tap away before the tech types. Ties go alphabetically, ignoring case. Alphabetical and most-recent-first were considered. Alphabetical can bury the most-used company at the bottom. Most-recent-first reorders after almost every claim.
 - **Damage labels:** a fixed list in the backend code, not a table. A photo's description column stays plain text, so a retired label still loads and exports.

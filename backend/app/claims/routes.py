@@ -11,6 +11,7 @@ from app.models import Claim, ClaimStatus, User
 from app.photos.attach import attach_photos, delete_uploads
 from app.photos.labels import DAMAGE_LABELS
 from app.storage import PhotoStorage, get_storage
+from app.unread import fill_unread
 
 router = APIRouter(prefix="/api")
 
@@ -90,6 +91,7 @@ def create_claim(
     # Only now that the claim is saved: a failure before this point leaves the
     # originals in place, so the tech's retry still works (design §8).
     delete_uploads(storage, [ref.key for ref in body.photos])
+    fill_unread(db, user, [claim])
     return claim
 
 
@@ -114,6 +116,7 @@ def list_claims(
         .offset((page - 1) * limit)
         .limit(limit)
     ).all()
+    fill_unread(db, user, items)  # one query for the whole page
     return ClaimPage(items=items, total=total, page=page, limit=limit)
 
 
@@ -121,7 +124,9 @@ def list_claims(
 def read_claim(
     claim_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)
 ) -> Claim:
-    return get_visible_claim(claim_id, user, db)
+    claim = get_visible_claim(claim_id, user, db)
+    fill_unread(db, user, [claim])
+    return claim
 
 
 @router.patch("/claims/{claim_id}", response_model=ClaimDetail)
@@ -135,6 +140,7 @@ def update_claim(
     for field, value in body.model_dump(exclude_unset=True).items():
         setattr(claim, field, value)
     db.commit()
+    fill_unread(db, user, [claim])
     return claim
 
 

@@ -1187,7 +1187,7 @@ git commit -m "feat: reviewer edits, added photos and zip export"
     - the reviewer has no `ClaimRead` row for the claim;
     - the claim owner has sent a message with `id > last_message_id`;
     - the claim owner has added a photo with `id > last_photo_id`.
-- **List and detail responses** fill in `unread` from `unread_claim_ids`.
+- **List and detail responses** fill in `unread` from `unread_claim_ids`. **Changed 2026-11-24 (design §10):** so do the `POST /claims` and `PATCH /claims/{id}` responses, through one helper shared by all three `ClaimDetail` routes.
 
 - [ ] **Step 1: Write the failing tests**
 
