@@ -46,7 +46,8 @@ The app replaces that:
 
 - Intake happens on iPhone Safari. Review happens on a laptop, possibly on mobile later.
 - **Frontend:** React + Vite + TypeScript, tested with Vitest + React Testing Library.
-- **UI:** shadcn/ui components (on Tailwind CSS) for a clean, modern look, with light and dark themes. **[Proposal]** The theme follows the device's setting by default, and a toggle in the nav bar overrides it and is remembered on that device.
+- **UI:** shadcn/ui components (on Tailwind CSS) for a clean, modern look, with light and dark themes.
+  - **The components sit on Base UI, not Radix** (owner's decision, 2026-11-24). Base UI is shadcn's default now and is where its new components are built. Switching cost almost nothing before any screens existed, and would touch every screen later. **[Proposal]** The theme follows the device's setting by default, and a toggle in the nav bar overrides it and is remembered on that device.
 - **Backend:** FastAPI + Uvicorn + SQLAlchemy + Pydantic, tested with pytest.
 - **Database:** PostgreSQL, with jsonb for flexible form data.
 - **Photo storage:**
@@ -81,6 +82,8 @@ The app replaces that:
 ## 5. Roles and access
 
 - **First visit:** a role picker asks for a name and a role (tech or reviewer). Reviewers also enter a notification email, which they can change later.
+  - **An empty email box means no email** (owner's decision, 2026-11-24). The role picker and the profile page send `null`, never `""`, which the backend rejects. A tech's profile sends only the name.
+  - **A rejected form says why** (owner's decision, 2026-11-24). When the backend refuses the role picker or the profile page (a 422, such as a bad email), a red alert above the button shows its message.
 - **Tech:**
   - Creates claims and sees only their own.
   - After submitting, can **add new photos**: damage photos (with descriptions), plus a mileage photo if the claim doesn't have one yet. Cannot change any existing field, photo or description.
@@ -101,6 +104,8 @@ The app replaces that:
 - **[Proposal]** The cookie lasts about one year and renews on each visit. Expiry would delete a tech's identity.
 - If a tech clears Safari data or switches phones, they lose their identity and their "my claims" list. Their claims stay visible to reviewers.
 - **[Proposal]** A "Test mode — don't enter real customer data" banner shows whenever anonymous mode is on.
+- **"Switch role" ends the session and forgets the stored current user** (owner's decision, 2026-11-24), so the previous name never flashes after picking a role again.
+- **Only a 401 sends you to the role picker** (owner's decision, 2026-11-24). When the backend can't be reached or fails another way, the page says "Can't reach the server" with a Retry button. Otherwise a sleeping laptop would make people create a second user for nothing.
 - **When Entra ID arrives:**
   - The users table already carries a role and an empty external-ID column for the Entra user ID.
   - Sessions and the single "who is the current user?" check every route uses stay as they are.

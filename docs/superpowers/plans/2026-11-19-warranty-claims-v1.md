@@ -1515,7 +1515,7 @@ git commit -m "feat: VIN year/make/model lookup through NHTSA vPIC"
 - **Produces in `src/test/render.tsx`:** `renderWithProviders(ui, opts?: { route?: string; path?: string })`. It wraps `ui` in a fresh `QueryClient` (retry off), `ThemeProvider` and `MemoryRouter` at `route` (default `/`). When `path` is given, it renders `ui` at `<Route path={path}>`.
 - **Produces `src/test/setup.ts`:**
   - Imports `@testing-library/jest-dom/vitest`.
-  - Polyfills `window.matchMedia` (light), `ResizeObserver`, `Element.prototype.hasPointerCapture`, `Element.prototype.releasePointerCapture` and `Element.prototype.scrollIntoView` for Radix components.
+  - Polyfills `window.matchMedia` (light), `ResizeObserver`, `Element.prototype.hasPointerCapture`, `Element.prototype.releasePointerCapture` and `Element.prototype.scrollIntoView` for menus and popovers.
   - In `afterEach`: `cleanup()`, `vi.clearAllMocks()`, `vi.restoreAllMocks()`, `localStorage.clear()`, and removing the `dark` class from `<html>`.
 
 - [ ] **Step 1: Scaffold the frontend.** From the repo root:
@@ -1524,6 +1524,7 @@ git commit -m "feat: VIN year/make/model lookup through NHTSA vPIC"
   - `npm i react-router @tanstack/react-query tesseract.js`
   - `npm i -D vitest jsdom @testing-library/react @testing-library/user-event @testing-library/jest-dom`
   - Follow shadcn/ui's Vite installation guide: Tailwind via `@tailwindcss/vite`, the `@` → `src` alias in `tsconfig` and `vite.config.ts`, then `npx shadcn@latest init`.
+  - **Changed 2026-11-24 (design §3):** shadcn now asks which primitives to build on. We use Base UI (`components.json` style `base-vega`), not Radix. Base UI uses a `render` prop where Radix used `asChild`, and menu items take `onClick`, not `onSelect`.
   - `npx shadcn@latest add button input label card badge table textarea select popover command alert dropdown-menu separator radio-group`.
   - In `vite.config.ts`, set `server: { host: true, port: 5173, proxy: { "/api": "http://localhost:8000" } }` and `test: { environment: "jsdom", setupFiles: "./src/test/setup.ts", globals: true }`.
   - Add the script `"test": "vitest run"`.
@@ -1595,7 +1596,8 @@ test("reviewer gives a notification email", async () => {
   renderPage();
   expect(screen.queryByLabelText(/notification email/i)).toBeNull();
   await userEvent.type(screen.getByLabelText(/your name/i), "Kim");
-  await userEvent.click(screen.getByLabelText(/reviewer/i));
+  // Changed 2026-11-24: Base UI gives the label two matches (a hidden input too), so query the radio by role.
+  await userEvent.click(screen.getByRole("radio", { name: /reviewer/i }));
   await userEvent.type(screen.getByLabelText(/notification email/i), "kim@example.com");
   await userEvent.click(screen.getByRole("button", { name: /continue/i }));
   expect(createSession).toHaveBeenCalledWith({ name: "Kim", role: "reviewer", email: "kim@example.com" });
@@ -1663,6 +1665,15 @@ Expected: failures for the missing modules.
 - [ ] **Step 4: Implement everything per Interfaces.**
   - **Role picker:** labels are "Your name", radio buttons "Tech" and "Reviewer", "Notification email" (shown only for Reviewer, optional), and a "Continue" button. On success, set `["me"]` in the query cache and navigate to `/`.
   - **Profile page:** "Name" and "Notification email" (reviewers only), plus a "Save" button.
+  - **Decided 2026-11-24 (design §5, §6):**
+    - An empty email box sends `null`. A tech's profile sends only the name.
+    - A 422 from the role picker or the profile page shows a red `Alert` with the message above the button.
+    - "Switch role" calls `endSession`, clears the query cache, then navigates to `/start`.
+    - `RequireUser` redirects only on a 401. Any other failure shows "Can't reach the server" with a Retry button.
+    - `useMe` never retries any 4xx `ApiError`, not just a 401: the same request gets the same answer (owner's call). A 5xx or a network failure is retried up to 3 times.
+    - The role picker starts with no role selected, so "Continue" needs a name and a role.
+    - Unknown URLs redirect to `/`.
+    - shadcn's "Vega" style (its classic look, with the Inter font).
 
 - [ ] **Step 5: Run them to see them pass**
 
