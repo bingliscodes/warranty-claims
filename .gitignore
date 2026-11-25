@@ -8,3 +8,6 @@ dist/
 coverage/
 .vscode/
 *.excalidraw
+
+# Tesseract.js files copied from node_modules by frontend/scripts/copy-ocr-files.mjs
+frontend/public/ocr/

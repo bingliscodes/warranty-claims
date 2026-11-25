@@ -1698,7 +1698,8 @@ git commit -m "feat: frontend shell with shadcn themes, role picker and profile"
 ### Task 12: OCR and VIN helpers
 
 **Files:**
-- Create: `src/lib/vin.ts`, `src/ocr/extract.ts`, `src/ocr/tesseract.ts`.
+- Create: `src/lib/vin.ts`, `src/ocr/extract.ts`, `src/ocr/tesseract.ts`, `scripts/copy-ocr-files.mjs`.
+- Modify: `package.json` (the `@tesseract.js-data/eng` dependency and the `predev`/`prebuild` scripts), the root `.gitignore` (`frontend/public/ocr/`).
 - Test: `src/lib/vin.test.ts`, `src/ocr/extract.test.ts`.
 
 **Interfaces:**
@@ -1709,8 +1710,16 @@ git commit -m "feat: frontend shell with shadcn themes, role picker and profile"
     - Letter values: A1 B2 C3 D4 E5 F6 G7 H8 J1 K2 L3 M4 N5 P7 R9 S2 T3 U4 V5 W6 X7 Y8 Z9. Digits are their own value.
     - Weights: 8 7 6 5 4 3 2 10 0 9 8 7 6 5 4 3 2.
     - Take the weighted sum mod 11. A result of 10 means the check digit is `X`.
+    - Returns `false`, rather than throwing, for anything that fails `isValidVin` (owner's call, 2026-11-25).
 - **Produces in `src/ocr/extract.ts`:** `extractVin(text: string): string | null` and `extractMileage(text: string): number | null`.
-- **Produces in `src/ocr/tesseract.ts`:** `recognizeText(image: Blob): Promise<string>`. It creates one `tesseract.js` worker (`createWorker("eng")`) on first use and reuses it. No unit test; Task 14 checks it by hand.
+- **Produces in `src/ocr/tesseract.ts`:** `recognizeText(image: Blob): Promise<string>`. It creates one `tesseract.js` worker (`createWorker("eng", …)`) on first use and reuses it. No unit test; Task 14 checks it by hand.
+  - **The files come from the app, not the CDN** (design §8, owner's decision, 2026-11-25). `workerPath`, `corePath` and `langPath` point under `/ocr/` as absolute URLs, because the worker can't resolve a relative path.
+  - If creating the worker fails, it forgets that attempt, so the next call tries again (owner's call, 2026-11-25).
+  - **Found while building (2026-11-25):** tesseract.js 7.0.0's `createWorker` never settles when the language data fails to load or initialize; only an engine-load failure rejects. It does call the `errorHandler` option, so `recognizeText` wraps `createWorker` in a `new Promise` that also rejects from `errorHandler` (owner's call, option A). The rejected choice was leaving it, which would leave OCR hung until a reload. A missing `/ocr/` file gets the SPA's `index.html` fallback with a 200, in Vite and in nginx alike, so this is also how a missing file shows up.
+- **Produces `scripts/copy-ocr-files.mjs`** (my proposal, accepted by the owner on 2026-11-25), run by the `predev` and `prebuild` npm scripts. It copies into `public/ocr/`:
+  - `tesseract.js/dist/worker.min.js`;
+  - the three LSTM engine builds, `tesseract.js-core/tesseract-core{,-simd,-relaxedsimd}-lstm.wasm.js`. Tesseract.js uses its LSTM engine by default and picks one build by what the phone supports;
+  - `@tesseract.js-data/eng/4.0.0_best_int/eng.traineddata.gz`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1761,11 +1770,11 @@ test.each([
 Run: `npm test -- src/lib src/ocr`
 Expected: failures for the missing modules.
 
-- [ ] **Step 3: Implement `vin.ts` and `tesseract.ts`, and implement `extract.ts` with these algorithms:**
+- [ ] **Step 3: Implement `vin.ts`, `tesseract.ts` and the copy script, and implement `extract.ts` with these algorithms:**
   - **`extractVin`:**
     1. Uppercase the text and split it into lines. Split each line into tokens on runs of characters outside `A–Z 0–9`. In every token, replace `I→1`, `O→0` and `Q→0`.
     2. Return the first 17-character token with a valid check digit.
-    3. Otherwise, on each line, join consecutive tokens, stopping once a join reaches 17 or more characters. Return the first exactly-17-character join with a valid check digit.
+    3. Otherwise, on each line, join consecutive tokens, stopping once a join reaches 17 or more characters. A join can start at any token on the line (owner's call, 2026-11-25). Return the first exactly-17-character join with a valid check digit.
     4. Otherwise, return the first 17-character token. Non-North-American VINs have no check digit.
     5. Otherwise, slide a 17-character window across each longer token, and return the first window with a valid check digit.
     6. Otherwise, return `null`.

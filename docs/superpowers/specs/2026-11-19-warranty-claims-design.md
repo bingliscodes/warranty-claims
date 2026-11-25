@@ -163,6 +163,8 @@ This follows the wireframe's two intake phases.
 - **OCR:**
   - VIN and mileage photos go through Tesseract.js in a Web Worker, and the results prefill the VIN and mileage fields.
   - The fields stay editable, and an OCR failure never blocks the tech.
+  - **The app serves Tesseract.js's files itself, not a CDN** (owner's decision, 2026-11-25). OCR needs a worker script, an OCR engine and the English language data. By default the phone downloads them from the jsDelivr CDN on first use. Serving them from the app means no third-party code runs in the page, OCR works without internet access, and the files always match the installed Tesseract.js version. Production would want this anyway, so v1 starts with it.
+  - **A script copies the files** from `node_modules` into `frontend/public/ocr/` (gitignored) before `npm run dev` and `npm run build` (my proposal, accepted by the owner on 2026-11-25). Vite serves `public/` in development and copies it into the build, so nginx serves the files in production. The language data comes from the `@tesseract.js-data/eng` npm package.
 - **VIN decoding:**
   - When a valid VIN is entered or read by OCR, the app looks up year, make and model through NHTSA vPIC and fills them in. They stay editable.
   - If the lookup fails, the fields stay blank for the tech to fill.
